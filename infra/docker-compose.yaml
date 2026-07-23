@@ -1,0 +1,40 @@
+# Single-box deployment: Caddy (TLS) + Node server/web + LiveKit + Redis.
+# All on host networking so LiveKit media (UDP) and external-IP advertisement
+# work without container NAT gymnastics.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    network_mode: host
+
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.generated.yaml:/etc/livekit.yaml:ro
+    depends_on: [redis]
+
+  server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [server, livekit]
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,13 @@
+# deps
+node_modules/
+# env / secrets — never commit real keys
+.env
+*.env
+!.env.example
+# build/tmp
+dist/
+*.log
+.DS_Store
+# infra local state
+infra/*.pem
+infra/.deploy-state.json

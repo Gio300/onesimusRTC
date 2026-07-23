@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>OnesimusRTC &mdash; Viewer</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.9.0/dist/livekit-client.umd.min.js"></script>
+</head>
+<body>
+  <div class="stage">
+    <div class="videowrap">
+      <video id="remote" autoplay playsinline></video>
+      <div class="overlay">
+        <span class="pill" id="roompill">room</span>
+        <span class="pill" id="status">connecting&hellip;</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="talk" class="talk">Tap to talk</button>
+      <button id="hand" class="ghost">Raise hand ✋</button>
+      <button id="leave" class="ghost">Leave</button>
+    </div>
+    <p class="hint" style="padding:0 14px 14px">You are voice-only. Tap <b>Talk</b> to
+      unmute, <b>Raise hand</b> to let the caster know you want to speak.</p>
+  </div>
+
+  <!-- caster audio renders here -->
+  <div id="audio-sink" style="display:none"></div>
+
+  <script type="module" src="/participant.js"></script>
+</body>
+</html>

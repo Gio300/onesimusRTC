@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>OnesimusRTC</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <h1>OnesimusRTC</h1>
+    <p class="tag">Low-bandwidth meetings. One caster on video, everyone else on voice.</p>
+
+    <label>Room name
+      <input id="room" value="main" autocomplete="off" />
+    </label>
+    <label>Your name
+      <input id="name" placeholder="e.g. Pastor Gio" autocomplete="off" />
+    </label>
+
+    <div class="roles">
+      <button id="join-participant" class="primary">Join as viewer (voice only)</button>
+      <button id="join-caster" class="ghost">Start as caster (video)</button>
+    </div>
+    <p class="hint">Viewers watch the caster and can raise a hand to speak. Only the
+      caster sends video &mdash; that is what keeps it working on slow connections.</p>
+  </main>
+
+  <script>
+    function go(role) {
+      const room = encodeURIComponent(document.getElementById('room').value.trim() || 'main')
+      const name = encodeURIComponent(document.getElementById('name').value.trim())
+      const page = role === 'caster' ? 'caster.html' : 'participant.html'
+      location.href = `/${page}?room=${room}&name=${name}`
+    }
+    document.getElementById('join-participant').onclick = () => go('participant')
+    document.getElementById('join-caster').onclick = () => go('caster')
+  </script>
+</body>
+</html>

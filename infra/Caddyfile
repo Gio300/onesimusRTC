@@ -1,0 +1,14 @@
+# Automatic HTTPS via Let's Encrypt. WEB_HOST / LK_HOST come from .env (both are
+# <ip>.sslip.io names that resolve to this box, so HTTP-01 challenges pass).
+
+# The app + token server + web client.
+{$WEB_HOST} {
+	encode zstd gzip
+	reverse_proxy localhost:8080
+}
+
+# LiveKit signaling (wss). Media (UDP 50000-60000 / TCP 7881) goes direct to the
+# host public IP, not through Caddy.
+{$LK_HOST} {
+	reverse_proxy localhost:7880
+}
