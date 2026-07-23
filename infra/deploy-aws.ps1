@@ -1,5 +1,5 @@
 # =============================================================================
-# deploy-aws.ps1 — stand up OnesimusRTC on a single EC2 box, phone-testable.
+# deploy-aws.ps1 - stand up OnesimusRTC on a single EC2 box, phone-testable.
 # Creates a security group + launches an Ubuntu instance whose user-data
 # (cloud-init.sh) installs docker and brings up LiveKit + Caddy + the app with
 # automatic HTTPS. Prints the URL to open on your phone.
@@ -14,9 +14,11 @@ param(
   [string]$Region       = "us-east-1",
   [string]$InstanceType = "t3.small",
   [string]$Name         = "onesimusrtc",
-  [string]$SgName       = "onesimusrtc-sg"
+  [string]$SgName       = "onesimusrtc-sg",
+  [string]$Profile      = ""
 )
 $ErrorActionPreference = "Stop"
+if ($Profile) { $env:AWS_PROFILE = $Profile }
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userData = Join-Path $here "cloud-init.sh"
 
@@ -28,9 +30,9 @@ catch {
 }
 
 Write-Host "== Resolving Ubuntu 22.04 AMI ==" -ForegroundColor Cyan
-$ami = aws ssm get-parameters --region $Region `
-  --names "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" `
-  --query "Parameters[0].Value" --output text
+$ami = aws ec2 describe-images --region $Region --owners 099720109477 `
+  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" "Name=state,Values=available" `
+  --query "sort_by(Images,&CreationDate)[-1].ImageId" --output text
 Write-Host "  AMI = $ami"
 
 Write-Host "== Security group ==" -ForegroundColor Cyan
@@ -60,7 +62,7 @@ $iid = aws ec2 run-instances --region $Region `
   --user-data "file://$userData" `
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$Name}]" `
   --query "Instances[0].InstanceId" --output text
-Write-Host "  instance $iid — waiting for running..."
+Write-Host "  instance $iid - waiting for running..."
 aws ec2 wait instance-running --region $Region --instance-ids $iid
 
 $ip = aws ec2 describe-instances --region $Region --instance-ids $iid `
@@ -74,6 +76,6 @@ $url = "https://$dash.sslip.io"
 Write-Host ""
 Write-Host "==============================================================" -ForegroundColor Green
 Write-Host " OnesimusRTC deploying to: $url" -ForegroundColor Green
-Write-Host " Give it ~3-4 min for docker + Let's Encrypt, then open on your phone." -ForegroundColor Green
+Write-Host " Give it ~3-4 min for docker build + TLS certs, then open on your phone." -ForegroundColor Green
 Write-Host " Instance: $iid   IP: $ip   Region: $Region" -ForegroundColor Green
 Write-Host "==============================================================" -ForegroundColor Green
