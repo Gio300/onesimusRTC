@@ -32,12 +32,23 @@ DASH=${IP//./-}
 KEY=$(openssl rand -hex 16)
 SECRET=$(openssl rand -hex 32)
 
+# If a real domain was baked in at deploy time, use it; otherwise fall back to
+# the sslip.io name derived from the public IP.
+DOMAIN="__DOMAIN__"
+if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "__DOMAIN__" ]; then
+  WEB_HOST="$DOMAIN"
+  LK_HOST="lk.$DOMAIN"
+else
+  WEB_HOST="${DASH}.sslip.io"
+  LK_HOST="lk.${DASH}.sslip.io"
+fi
+
 cat > .env <<EOF
-WEB_HOST=${DASH}.sslip.io
-LK_HOST=lk.${DASH}.sslip.io
+WEB_HOST=${WEB_HOST}
+LK_HOST=${LK_HOST}
 LIVEKIT_API_KEY=${KEY}
 LIVEKIT_API_SECRET=${SECRET}
-LIVEKIT_WS_URL=wss://lk.${DASH}.sslip.io
+LIVEKIT_WS_URL=wss://${LK_HOST}
 PORT=8080
 EOF
 

@@ -15,12 +15,23 @@ param(
   [string]$InstanceType = "t3.small",
   [string]$Name         = "onesimusrtc",
   [string]$SgName       = "onesimusrtc-sg",
-  [string]$Profile      = ""
+  [string]$Profile      = "",
+  [string]$Domain       = "",
+  [string]$EipAllocId   = ""
 )
 $ErrorActionPreference = "Stop"
 if ($Profile) { $env:AWS_PROFILE = $Profile }
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $userData = Join-Path $here "cloud-init.sh"
+
+# If a domain is given, bake it into a templated copy of cloud-init.sh so the box
+# serves onesimos.com (LiveKit at lk.onesimos.com) with real Let's Encrypt certs.
+if ($Domain) {
+  $tmpl = (Get-Content $userData -Raw) -replace "__DOMAIN__", $Domain
+  $userData = Join-Path $env:TEMP "cloud-init.onesimos.sh"
+  Set-Content -Path $userData -Value $tmpl -Encoding ASCII
+  Write-Host "== Domain mode: $Domain (LiveKit at lk.$Domain) ==" -ForegroundColor Cyan
+}
 
 Write-Host "== Checking AWS session ==" -ForegroundColor Cyan
 try { aws sts get-caller-identity --output json | Out-Null }
@@ -65,10 +76,16 @@ $iid = aws ec2 run-instances --region $Region `
 Write-Host "  instance $iid - waiting for running..."
 aws ec2 wait instance-running --region $Region --instance-ids $iid
 
+# Associate the stable Elastic IP if provided (so the domain's A record is fixed).
+if ($EipAllocId) {
+  aws ec2 associate-address --region $Region --instance-id $iid --allocation-id $EipAllocId | Out-Null
+  Start-Sleep -Seconds 3
+}
+
 $ip = aws ec2 describe-instances --region $Region --instance-ids $iid `
   --query "Reservations[0].Instances[0].PublicIpAddress" --output text
 $dash = $ip.Replace(".", "-")
-$url = "https://$dash.sslip.io"
+if ($Domain) { $url = "https://$Domain" } else { $url = "https://$dash.sslip.io" }
 
 @{ instanceId=$iid; ip=$ip; url=$url; region=$Region; sg=$sgId } |
   ConvertTo-Json | Set-Content (Join-Path $here ".deploy-state.json")
