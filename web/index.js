@@ -24,6 +24,7 @@ async function go(role) {
   joinError.textContent = ''
 
   if (role === 'participant') {
+    sessionStorage.removeItem('onesimusCasterSession')
     location.href = `/participant.html?room=${encodeURIComponent(rawRoom)}&name=${encodeURIComponent(rawName)}`
     return
   }

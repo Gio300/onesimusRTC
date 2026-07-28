@@ -171,6 +171,7 @@ document.getElementById('share').onclick = async () => {
 
 document.getElementById('leave').onclick = async () => {
   await room?.disconnect()
+  sessionStorage.removeItem('onesimusCasterSession')
   location.href = '/'
 }
 
