@@ -13,6 +13,11 @@ document.getElementById('roompill').textContent = roomName
 
 let room
 let handUp = false
+let hasVideo = false
+
+function syncVideoStatus() {
+  setStatus(hasVideo ? 'live' : 'connected - waiting for caster video')
+}
 
 async function syncSpeakPermission() {
   const allowed = Boolean(room?.localParticipant.permissions?.canPublish)
@@ -50,12 +55,19 @@ async function start() {
   room
     .on(L.RoomEvent.TrackSubscribed, (track) => {
       if (track.kind === 'video') {
+        hasVideo = true
         track.attach(document.getElementById('remote'))
-        setStatus('live')
+        syncVideoStatus()
       } else if (track.kind === 'audio') {
         const element = track.attach()
         element.autoplay = true
         document.getElementById('audio-sink').appendChild(element)
+      }
+    })
+    .on(L.RoomEvent.TrackUnsubscribed, (track) => {
+      if (track.kind === 'video') {
+        hasVideo = false
+        syncVideoStatus()
       }
     })
     .on(L.RoomEvent.ParticipantPermissionsChanged, (_previous, participant) => {
@@ -69,7 +81,7 @@ async function start() {
     .on(L.RoomEvent.Disconnected, () => setStatus('disconnected'))
 
   await room.connect(livekitUrl, token)
-  setStatus('connected - waiting for caster video')
+  syncVideoStatus()
   syncAudioButton(room, document.getElementById('audio'))
   await syncSpeakPermission()
 }
