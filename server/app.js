@@ -1,4 +1,8 @@
-import { timingSafeEqual, randomBytes } from 'node:crypto'
+import {
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import express from 'express'
@@ -42,6 +46,38 @@ export function secretsMatch(provided, expected) {
     && timingSafeEqual(left, right)
 }
 
+function signValue(value, secret) {
+  return createHmac('sha256', secret).update(value).digest('base64url')
+}
+
+export function createModeratorToken(
+  room,
+  secret,
+  expiresAt = Date.now() + 4 * 60 * 60 * 1000,
+) {
+  const payload = Buffer.from(JSON.stringify({
+    room,
+    exp: Math.floor(expiresAt / 1000),
+    nonce: randomBytes(8).toString('hex'),
+  })).toString('base64url')
+  return `${payload}.${signValue(payload, secret)}`
+}
+
+export function verifyModeratorToken(token, room, secret, now = Date.now()) {
+  const [payload, signature, extra] = String(token || '').split('.')
+  if (!payload || !signature || extra) return false
+  if (!secretsMatch(signature, signValue(payload, secret))) return false
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
+    return parsed.room === room
+      && Number.isFinite(parsed.exp)
+      && parsed.exp >= Math.floor(now / 1000)
+  } catch {
+    return false
+  }
+}
+
 export function participantPermission(canSpeak) {
   return {
     canSubscribe: true,
@@ -71,9 +107,17 @@ export function videoGrant(role, room) {
 
 function makeRateLimiter({ max, windowMs }) {
   const clients = new Map()
+  let lastSweepAt = 0
 
   return (req, res, next) => {
     const now = Date.now()
+    if (now - lastSweepAt >= windowMs) {
+      for (const [key, client] of clients) {
+        if (now >= client.resetAt) clients.delete(key)
+      }
+      lastSweepAt = now
+    }
+
     const key = req.ip || req.socket.remoteAddress || 'unknown'
     const current = clients.get(key)
 
@@ -107,6 +151,7 @@ export function createApp(options = {}) {
   const livekitApiUrl = env.LIVEKIT_API_URL || 'http://localhost:7880'
   const hostAccessCode = cleanText(env.HOST_ACCESS_CODE, '', 256)
   const production = env.NODE_ENV === 'production'
+  const moderatorSigningSecret = env.MODERATOR_SIGNING_SECRET || apiSecret
   const roomService = options.roomService
     || new RoomServiceClient(livekitApiUrl, apiKey, apiSecret)
 
@@ -115,17 +160,48 @@ export function createApp(options = {}) {
   if (env.TRUST_PROXY === '1') app.set('trust proxy', 1)
   app.use((_req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff')
+    res.set('X-Frame-Options', 'DENY')
     res.set('Referrer-Policy', 'no-referrer')
+    res.set('Cross-Origin-Resource-Policy', 'same-origin')
+    res.set(
+      'Permissions-Policy',
+      'camera=(self), microphone=(self), geolocation=(), payment=(), usb=()',
+    )
+    res.set(
+      'Content-Security-Policy',
+      [
+        "default-src 'self'",
+        "base-uri 'none'",
+        "connect-src 'self' " + livekitWsUrl,
+        "frame-ancestors 'none'",
+        "img-src 'self' data:",
+        "media-src 'self' blob:",
+        "object-src 'none'",
+        "script-src 'self'",
+        "style-src 'self'",
+      ].join('; '),
+    )
+    if (production) {
+      res.set(
+        'Strict-Transport-Security',
+        'max-age=31536000; includeSubDomains',
+      )
+    }
     next()
   })
   app.use(['/config', '/token', '/rooms'], (_req, res, next) => {
     res.set('Cache-Control', 'no-store')
     next()
   })
+  const tokenLimiter = makeRateLimiter(
+    options.tokenRateLimit || { max: 40, windowMs: 60_000 },
+  )
+  const moderationLimiter = makeRateLimiter(
+    options.moderationRateLimit || { max: 120, windowMs: 60_000 },
+  )
+  app.use('/token', tokenLimiter)
+  app.use('/rooms', moderationLimiter)
   app.use(express.json({ limit: '16kb', strict: true }))
-
-  const tokenLimiter = makeRateLimiter({ max: 40, windowMs: 60_000 })
-  const moderationLimiter = makeRateLimiter({ max: 120, windowMs: 60_000 })
 
   const hostAuthorized = (provided) => {
     if (!hostAccessCode) return !production
@@ -147,7 +223,7 @@ export function createApp(options = {}) {
     })
   })
 
-  app.post('/token', tokenLimiter, async (req, res) => {
+  app.post('/token', async (req, res) => {
     try {
       const role = req.body?.role === 'caster' ? 'caster' : 'participant'
       if (role === 'caster' && !hostAccessCode && production) {
@@ -173,14 +249,21 @@ export function createApp(options = {}) {
       })
       token.addGrant(videoGrant(role, room))
 
-      res.json({
+      const response = {
         token: await token.toJwt(),
         identity,
         name: displayName,
         role,
         room,
         livekitUrl: livekitWsUrl,
-      })
+      }
+      if (role === 'caster') {
+        response.moderatorToken = createModeratorToken(
+          room,
+          moderatorSigningSecret,
+        )
+      }
+      res.json(response)
     } catch (error) {
       console.error('[token] error', error)
       res.status(500).json({ error: 'token_failed' })
@@ -189,14 +272,9 @@ export function createApp(options = {}) {
 
   app.post(
     '/rooms/:room/participants/:identity/speaking',
-    moderationLimiter,
     async (req, res) => {
       if (!hostAccessCode && production) {
         res.status(503).json({ error: 'host_access_not_configured' })
-        return
-      }
-      if (!hostAuthorized(readBearer(req))) {
-        res.status(403).json({ error: 'invalid_host_code' })
         return
       }
       if (typeof req.body?.allowed !== 'boolean') {
@@ -208,6 +286,14 @@ export function createApp(options = {}) {
       const identity = cleanText(req.params.identity, '')
       if (!room || !/^[a-zA-Z0-9_.-]{1,64}$/.test(identity)) {
         res.status(400).json({ error: 'invalid_participant' })
+        return
+      }
+      if (!verifyModeratorToken(
+        readBearer(req),
+        room,
+        moderatorSigningSecret,
+      )) {
+        res.status(403).json({ error: 'invalid_moderator_token' })
         return
       }
 
@@ -222,7 +308,12 @@ export function createApp(options = {}) {
       } catch (error) {
         console.error('[moderation] error', error)
         const message = String(error?.message || '')
-        const status = /not found/i.test(message) ? 404 : 502
+        const code = error?.code ?? error?.status ?? error?.statusCode
+        const notFound = code === 5
+          || code === 404
+          || code === 'NOT_FOUND'
+          || /not found|does not exist|unknown participant/i.test(message)
+        const status = notFound ? 404 : 502
         res.status(status).json({
           error: status === 404 ? 'participant_not_found' : 'moderation_failed',
         })
@@ -231,15 +322,33 @@ export function createApp(options = {}) {
   )
 
   if (options.serveStatic !== false) {
+    app.get('/vendor/livekit-client.umd.min.js', (_req, res) => {
+      res.sendFile(join(
+        __dirname,
+        'node_modules',
+        'livekit-client',
+        'dist',
+        'livekit-client.umd.js',
+      ))
+    })
     app.use(express.static(options.publicDir || join(__dirname, '..', 'web')))
   }
 
   app.use((error, _req, res, next) => {
+    if (error?.type === 'entity.too.large') {
+      res.status(413).json({ error: 'payload_too_large' })
+      return
+    }
     if (error instanceof SyntaxError && error.status === 400) {
       res.status(400).json({ error: 'invalid_json' })
       return
     }
-    next(error)
+    if (res.headersSent) {
+      next(error)
+      return
+    }
+    console.error('[http] unhandled error', error)
+    res.status(500).json({ error: 'internal_error' })
   })
 
   return app

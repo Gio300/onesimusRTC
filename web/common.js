@@ -62,14 +62,19 @@ export function makeRoom(role = 'participant') {
   return new L.Room(options)
 }
 
-export async function setSpeakerPermission(room, identity, allowed, hostCode) {
+export async function setSpeakerPermission(
+  room,
+  identity,
+  allowed,
+  moderatorToken,
+) {
   const res = await fetch(
     `/rooms/${encodeURIComponent(room)}/participants/${encodeURIComponent(identity)}/speaking`,
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${hostCode}`,
+        Authorization: `Bearer ${moderatorToken}`,
       },
       body: JSON.stringify({ allowed }),
     },

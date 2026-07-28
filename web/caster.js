@@ -1,7 +1,6 @@
 import {
   LK,
   qs,
-  getToken,
   makeRoom,
   decode,
   setStatus,
@@ -9,8 +8,16 @@ import {
   syncAudioButton,
 } from '/common.js'
 
-const { room: roomName, name } = qs()
-const hostCode = sessionStorage.getItem('onesimusHostCode') || ''
+const { room: roomName } = qs()
+const storedSession = sessionStorage.getItem('onesimusCasterSession')
+let casterSession = null
+try {
+  casterSession = storedSession ? JSON.parse(storedSession) : null
+} catch {
+  sessionStorage.removeItem('onesimusCasterSession')
+}
+const moderatorToken = casterSession?.moderatorToken || ''
+sessionStorage.removeItem('onesimusHostCode')
 document.getElementById('roompill').textContent = roomName
 
 const hands = new Map()
@@ -58,7 +65,7 @@ function renderRoster() {
           roomName,
           participant.identity,
           !allowed,
-          hostCode,
+          moderatorToken,
         )
         if (!allowed) hands.set(participant.identity, { ...hand, up: false })
       } catch (error) {
@@ -76,12 +83,17 @@ function renderRoster() {
 
 async function start() {
   const L = LK()
-  const { token, livekitUrl } = await getToken(
-    'caster',
-    roomName,
-    name,
-    { hostCode },
-  )
+  if (
+    !casterSession
+    || casterSession.role !== 'caster'
+    || casterSession.room !== roomName
+    || !casterSession.token
+    || !casterSession.livekitUrl
+    || !moderatorToken
+  ) {
+    throw new Error('Host session missing. Return home and enter the host access code.')
+  }
+  const { token, livekitUrl } = casterSession
   room = makeRoom('caster')
 
   room
