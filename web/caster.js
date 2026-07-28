@@ -1,70 +1,168 @@
-import { LK, qs, getToken, makeRoom, decode, setStatus } from '/common.js'
+import {
+  LK,
+  qs,
+  getToken,
+  makeRoom,
+  decode,
+  setStatus,
+  setSpeakerPermission,
+  syncAudioButton,
+} from '/common.js'
 
 const { room: roomName, name } = qs()
+const hostCode = sessionStorage.getItem('onesimusHostCode') || ''
 document.getElementById('roompill').textContent = roomName
 
-const hands = new Map()      // identity -> { name, up }
+const hands = new Map()
 let room
 
 function renderRoster() {
-  const ul = document.getElementById('people')
+  if (!room) return
+
+  const list = document.getElementById('people')
   const people = [...room.remoteParticipants.values()]
   document.getElementById('count').textContent = String(people.length)
-  ul.innerHTML = ''
-  for (const p of people) {
-    const li = document.createElement('li')
-    const h = hands.get(p.identity)
-    const raised = h?.up
-    li.textContent = (p.name || p.identity) + (raised ? '  ✋' : '')
-    if (raised) li.className = 'hand'
-    else if (p.isSpeaking) li.className = 'speaking'
-    ul.appendChild(li)
+  list.innerHTML = ''
+
+  for (const participant of people) {
+    const item = document.createElement('li')
+    const hand = hands.get(participant.identity)
+    const raised = Boolean(hand?.up)
+    const allowed = Boolean(participant.permissions?.canPublish)
+
+    if (raised) item.classList.add('hand')
+    if (participant.isSpeaking) item.classList.add('speaking')
+
+    const details = document.createElement('span')
+    details.className = 'person-details'
+
+    const personName = document.createElement('strong')
+    personName.textContent = participant.name || participant.identity
+
+    const state = document.createElement('small')
+    state.textContent = raised
+      ? 'Hand raised'
+      : allowed
+        ? 'Mic allowed'
+        : 'Listening'
+
+    details.append(personName, state)
+
+    const button = document.createElement('button')
+    button.className = allowed ? 'mute-person' : 'allow-person'
+    button.textContent = allowed ? 'Mute' : 'Allow mic'
+    button.onclick = async () => {
+      button.disabled = true
+      try {
+        await setSpeakerPermission(
+          roomName,
+          participant.identity,
+          !allowed,
+          hostCode,
+        )
+        if (!allowed) hands.set(participant.identity, { ...hand, up: false })
+      } catch (error) {
+        setStatus(error.message)
+      } finally {
+        button.disabled = false
+        renderRoster()
+      }
+    }
+
+    item.append(details, button)
+    list.appendChild(item)
   }
 }
 
 async function start() {
   const L = LK()
-  const { token, livekitUrl } = await getToken('caster', roomName, name)
-  room = makeRoom()
+  const { token, livekitUrl } = await getToken(
+    'caster',
+    roomName,
+    name,
+    { hostCode },
+  )
+  room = makeRoom('caster')
 
   room
     .on(L.RoomEvent.ParticipantConnected, renderRoster)
-    .on(L.RoomEvent.ParticipantDisconnected, (p) => { hands.delete(p.identity); renderRoster() })
+    .on(L.RoomEvent.ParticipantDisconnected, (participant) => {
+      hands.delete(participant.identity)
+      renderRoster()
+    })
     .on(L.RoomEvent.ActiveSpeakersChanged, renderRoster)
+    .on(L.RoomEvent.ParticipantPermissionsChanged, renderRoster)
+    .on(L.RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === 'audio') {
+        const element = track.attach()
+        element.autoplay = true
+        document.getElementById('audio-sink').appendChild(element)
+      }
+    })
     .on(L.RoomEvent.DataReceived, (payload, participant) => {
-      const msg = decode(payload)
-      if (msg?.type === 'hand') {
-        hands.set(participant.identity, { name: participant?.name, up: !!msg.up })
+      const message = decode(payload)
+      if (message?.type === 'hand') {
+        hands.set(participant.identity, {
+          name: participant.name,
+          up: Boolean(message.up),
+        })
         renderRoster()
       }
     })
+    .on(L.RoomEvent.AudioPlaybackStatusChanged, () => {
+      syncAudioButton(room, document.getElementById('audio'))
+    })
+    .on(L.RoomEvent.Reconnecting, () => setStatus('reconnecting...'))
+    .on(L.RoomEvent.Reconnected, () => setStatus('live'))
     .on(L.RoomEvent.Disconnected, () => setStatus('disconnected'))
 
   await room.connect(livekitUrl, token)
   setStatus('live')
 
-  // Low-bandwidth publish: 360p simulcast so weak viewers auto-drop to the small
-  // layer; modest bitrate keeps the caster uplink light too.
   await room.localParticipant.enableCameraAndMicrophone()
-  const camPub = room.localParticipant.getTrackPublication(L.Track.Source.Camera)
-  const el = document.getElementById('local')
-  if (camPub?.track) camPub.track.attach(el)
+  const cameraPublication = room.localParticipant.getTrackPublication(
+    L.Track.Source.Camera,
+  )
+  if (cameraPublication?.track) {
+    cameraPublication.track.attach(document.getElementById('local'))
+  }
 
+  syncAudioButton(room, document.getElementById('audio'))
   renderRoster()
 }
 
 document.getElementById('mic').onclick = async () => {
-  const on = room.localParticipant.isMicrophoneEnabled
-  await room.localParticipant.setMicrophoneEnabled(!on)
-  document.getElementById('mic').textContent = on ? 'Unmute mic' : 'Mute mic'
-}
-document.getElementById('cam').onclick = async () => {
-  const on = room.localParticipant.isCameraEnabled
-  await room.localParticipant.setCameraEnabled(!on)
-  document.getElementById('cam').textContent = on ? 'Start video' : 'Stop video'
-}
-document.getElementById('leave').onclick = async () => {
-  await room?.disconnect(); location.href = '/'
+  const enabled = room.localParticipant.isMicrophoneEnabled
+  await room.localParticipant.setMicrophoneEnabled(!enabled)
+  document.getElementById('mic').textContent = enabled ? 'Unmute mic' : 'Mute mic'
 }
 
-start().catch((e) => { console.error(e); setStatus('error: ' + e.message) })
+document.getElementById('cam').onclick = async () => {
+  const enabled = room.localParticipant.isCameraEnabled
+  await room.localParticipant.setCameraEnabled(!enabled)
+  document.getElementById('cam').textContent = enabled ? 'Start video' : 'Stop video'
+}
+
+document.getElementById('audio').onclick = async () => {
+  await room.startAudio()
+  syncAudioButton(room, document.getElementById('audio'))
+}
+
+document.getElementById('share').onclick = async () => {
+  const url = new URL('/participant.html', location.origin)
+  url.searchParams.set('room', roomName)
+  const button = document.getElementById('share')
+  await navigator.clipboard.writeText(url.toString())
+  button.textContent = 'Viewer link copied'
+  setTimeout(() => { button.textContent = 'Copy viewer link' }, 1800)
+}
+
+document.getElementById('leave').onclick = async () => {
+  await room?.disconnect()
+  location.href = '/'
+}
+
+start().catch((error) => {
+  console.error(error)
+  setStatus(`error: ${error.message}`)
+})

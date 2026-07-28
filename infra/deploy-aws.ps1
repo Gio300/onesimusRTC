@@ -66,6 +66,15 @@ if (-not $sgId -or $sgId -eq "None") {
   Write-Host "  reusing $sgId"
 }
 
+# Keep TURN/UDP available even when reusing a security group made by an older
+# version of this script. AWS returns InvalidPermission.Duplicate when present.
+$turnRule = aws ec2 authorize-security-group-ingress --region $Region --group-id $sgId `
+  --protocol udp --port 443 --cidr 0.0.0.0/0 2>&1
+if ($LASTEXITCODE -ne 0 -and $turnRule -notmatch "InvalidPermission.Duplicate") {
+  throw $turnRule
+}
+Write-Host "  TURN ingress: udp 443"
+
 Write-Host "== Launching instance ==" -ForegroundColor Cyan
 $iid = aws ec2 run-instances --region $Region `
   --image-id $ami --instance-type $InstanceType `

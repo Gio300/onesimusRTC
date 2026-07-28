@@ -17,19 +17,47 @@
     <label>Your name
       <input id="name" placeholder="e.g. Pastor Gio" autocomplete="off" />
     </label>
+    <label id="host-code-wrap" hidden>Host access code
+      <input id="host-code" type="password" autocomplete="off" />
+    </label>
 
     <div class="roles">
       <button id="join-participant" class="primary">Join as viewer (voice only)</button>
       <button id="join-caster" class="ghost">Start as caster (video)</button>
     </div>
+    <p class="join-error" id="join-error" role="alert"></p>
     <p class="hint">Viewers watch the caster and can raise a hand to speak. Only the
       caster sends video &mdash; that is what keeps it working on slow connections.</p>
   </main>
 
   <script>
+    let hostCodeRequired = false
+    const hostCodeWrap = document.getElementById('host-code-wrap')
+    const hostCodeInput = document.getElementById('host-code')
+    const joinError = document.getElementById('join-error')
+
+    fetch('/config')
+      .then((res) => res.json())
+      .then((config) => {
+        hostCodeRequired = Boolean(config.hostCodeRequired)
+        hostCodeWrap.hidden = !hostCodeRequired
+      })
+      .catch(() => {
+        joinError.textContent = 'The meeting service is not reachable yet.'
+      })
+
     function go(role) {
       const room = encodeURIComponent(document.getElementById('room').value.trim() || 'main')
       const name = encodeURIComponent(document.getElementById('name').value.trim())
+      if (role === 'caster') {
+        const hostCode = hostCodeInput.value.trim()
+        if (hostCodeRequired && !hostCode) {
+          joinError.textContent = 'Enter the host access code to start the camera.'
+          hostCodeInput.focus()
+          return
+        }
+        sessionStorage.setItem('onesimusHostCode', hostCode)
+      }
       const page = role === 'caster' ? 'caster.html' : 'participant.html'
       location.href = `/${page}?room=${room}&name=${name}`
     }

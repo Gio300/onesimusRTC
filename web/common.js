@@ -13,26 +13,77 @@ export function qs() {
 }
 
 // Ask the server where LiveKit lives + mint a scoped token for this role.
-export async function getToken(role, room, name) {
+export async function getToken(role, room, name, options = {}) {
   const identity = (name || '').trim() || `${role}-${Math.random().toString(36).slice(2, 7)}`
   const res = await fetch('/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ room, role, identity }),
+    body: JSON.stringify({
+      room,
+      role,
+      identity,
+      hostCode: options.hostCode || undefined,
+    }),
   })
-  if (!res.ok) throw new Error(`token request failed (${res.status})`)
-  return res.json() // { token, identity, role, room, livekitUrl }
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const messages = {
+      invalid_host_code: 'The host access code is not correct.',
+      host_access_not_configured: 'Host access has not been configured on the server.',
+      too_many_requests: 'Too many connection attempts. Wait a moment and retry.',
+    }
+    throw new Error(messages[payload.error] || `Connection request failed (${res.status}).`)
+  }
+  return payload
 }
 
 // One Room, tuned for weak networks: adaptiveStream downshifts video per viewer,
 // dynacast stops sending layers nobody is watching.
-export function makeRoom() {
+export function makeRoom(role = 'participant') {
   const L = LK()
-  return new L.Room({
+  const options = {
     adaptiveStream: true,
     dynacast: true,
     disconnectOnPageLeave: true,
-  })
+  }
+
+  if (role === 'caster') {
+    options.videoCaptureDefaults = {
+      resolution: L.VideoPresets.h360,
+    }
+    options.publishDefaults = {
+      videoEncoding: L.VideoPresets.h360.encoding,
+      videoSimulcastLayers: [L.VideoPresets.h180],
+      dtx: true,
+      red: true,
+    }
+  }
+
+  return new L.Room(options)
+}
+
+export async function setSpeakerPermission(room, identity, allowed, hostCode) {
+  const res = await fetch(
+    `/rooms/${encodeURIComponent(room)}/participants/${encodeURIComponent(identity)}/speaking`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${hostCode}`,
+      },
+      body: JSON.stringify({ allowed }),
+    },
+  )
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(payload.error || `Microphone update failed (${res.status}).`)
+  }
+  return payload
+}
+
+export function syncAudioButton(room, button) {
+  if (!room || !button) return
+  button.hidden = room.canPlaybackAudio
 }
 
 export function encode(obj) {

@@ -9,6 +9,11 @@ rtc:
   use_external_ip: true
 redis:
   address: localhost:6379
+turn:
+  enabled: true
+  # UDP 443 works through more mobile and restrictive networks while Caddy keeps
+  # using TCP 443 for HTTPS. The two protocols can share the port safely.
+  udp_port: 443
 keys:
   __API_KEY__: __API_SECRET__
 logging:

@@ -1,42 +1,54 @@
 # Deploying OnesimusRTC to AWS
 
-One EC2 instance runs the whole stack via docker-compose:
+One EC2 instance runs:
 
-- **Caddy** — automatic HTTPS (Let's Encrypt) for two `sslip.io` hostnames that
-  resolve to the box, so no DNS setup is needed.
-- **server** — the Node token service + static web client.
-- **livekit** — the WebRTC SFU (host networking for UDP media).
-- **redis** — LiveKit's state store.
+- Caddy for HTTPS and WebSocket proxying.
+- The Express token/moderation API and static browser client.
+- LiveKit as the WebRTC SFU.
+- Redis for LiveKit state.
 
 ## Prerequisites
 
-- An **active AWS session** (`aws sts get-caller-identity` must succeed). If it
-  says the session expired, run your usual `aws login` / `aws sso login`.
-- A default VPC in the target region (standard on most accounts).
+- An active AWS CLI session: `aws sts get-caller-identity`.
+- A default VPC in the selected region.
 
 ## Deploy
 
 ```powershell
-./deploy-aws.ps1
+.\deploy-aws.ps1
 ```
 
-It prints a URL like `https://54-123-45-67.sslip.io`. Wait ~3–4 minutes for
-docker to build and Let's Encrypt to issue certs, then open it on your phone:
+Without `-Domain`, the script uses an automatic `sslip.io` hostname. It
+generates LiveKit credentials and a separate host access code on the instance.
 
-- One device / tab → **Start as caster** (allow camera + mic).
-- Other devices → **Join as viewer** (they watch, tap **Talk** to speak, **Raise
-  hand** to signal).
+## Network ports
 
-## Ports opened
+- TCP 80 and 443: HTTP redirect and HTTPS.
+- TCP 7881: LiveKit ICE/TCP fallback.
+- UDP 443: embedded TURN for restrictive mobile networks.
+- UDP 50000-60000: direct WebRTC media.
+- TCP 22: instance administration.
 
-`tcp 22, 80, 443, 7881` and `udp 50000–60000` (LiveKit media). Media flows
-directly to the instance's public IP; only signaling goes through Caddy's 443.
+## Meeting flow
 
-## Cost
+1. Open the site and enter the generated host access code.
+2. Start as caster and allow camera and microphone access.
+3. Copy the viewer link.
+4. Viewers join without camera permission.
+5. A viewer raises a hand.
+6. The caster selects `Allow mic`; the viewer can then tap to talk.
+7. The caster can revoke the microphone at any time.
 
-`t3.small` is a few cents/hour. The real variable cost is data egress
-(~$0.09/GB) — at a rural-friendly ~400 kbps video that's roughly 1.6¢ per
-viewer-hour. Bump `-InstanceType c5.large` for larger rooms.
+## Verify
+
+```powershell
+Invoke-RestMethod https://YOUR_HOST/healthz
+Invoke-RestMethod https://YOUR_HOST/config
+```
+
+`healthz` should report `hostConfigured: true`. A participant request to
+`POST /token` should succeed, while a caster request with a wrong code should
+return HTTP 403.
 
 ## Teardown
 
@@ -44,10 +56,3 @@ viewer-hour. Bump `-InstanceType c5.large` for larger rooms.
 $s = Get-Content .deploy-state.json | ConvertFrom-Json
 aws ec2 terminate-instances --region $s.region --instance-ids $s.instanceId
 ```
-
-## Notes / hardening for later
-
-- Swap `sslip.io` for a real domain (you own several) — point an A record at the
-  IP and change `WEB_HOST`/`LK_HOST` in `.env`.
-- For big rooms or strict-NAT phones, add a TURN/TLS listener.
-- Move LiveKit keys into AWS Secrets Manager instead of generating on-box.

@@ -31,6 +31,7 @@ IP=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" \
 DASH=${IP//./-}
 KEY=$(openssl rand -hex 16)
 SECRET=$(openssl rand -hex 32)
+HOST_CODE=$(openssl rand -hex 10)
 
 # If a real domain was baked in at deploy time, use it; otherwise fall back to
 # the sslip.io name derived from the public IP.
@@ -49,12 +50,18 @@ LK_HOST=${LK_HOST}
 LIVEKIT_API_KEY=${KEY}
 LIVEKIT_API_SECRET=${SECRET}
 LIVEKIT_WS_URL=wss://${LK_HOST}
+LIVEKIT_API_URL=http://localhost:7880
+HOST_ACCESS_CODE=${HOST_CODE}
+NODE_ENV=production
+TRUST_PROXY=1
 PORT=8080
 EOF
+
+chmod 600 .env
 
 sed -e "s/__API_KEY__/${KEY}/" -e "s/__API_SECRET__/${SECRET}/" \
   livekit.yaml > livekit.generated.yaml
 
 docker compose up -d --build
 
-echo "OnesimusRTC is starting at https://${DASH}.sslip.io"
+echo "OnesimusRTC is starting at https://${WEB_HOST}"

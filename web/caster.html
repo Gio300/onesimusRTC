@@ -25,9 +25,13 @@
     <div class="controls">
       <button id="mic" class="ghost">Mute mic</button>
       <button id="cam" class="ghost">Stop video</button>
+      <button id="audio" class="primary" hidden>Enable sound</button>
+      <button id="share" class="ghost">Copy viewer link</button>
       <button id="leave" class="ghost">Leave</button>
     </div>
   </div>
+
+  <div id="audio-sink" hidden></div>
 
   <script type="module" src="/caster.js"></script>
 </body>
