@@ -11,3 +11,5 @@ dist/
 # infra local state
 infra/*.pem
 infra/.deploy-state.json
+infra/.env.*
+infra/livekit.generated.yaml
