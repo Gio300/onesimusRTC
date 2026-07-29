@@ -663,6 +663,9 @@ async function start() {
         document.getElementById('audio-sink').appendChild(element)
       }
     })
+    .on(L.RoomEvent.TrackUnsubscribed, (track) => {
+      for (const element of track.detach()) element.remove()
+    })
     .on(L.RoomEvent.DataReceived, (payload, participant) => {
       const message = decode(payload)
       if (message?.type === 'hand') {

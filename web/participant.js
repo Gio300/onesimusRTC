@@ -66,6 +66,7 @@ async function start() {
       }
     })
     .on(L.RoomEvent.TrackUnsubscribed, (track) => {
+      for (const element of track.detach()) element.remove()
       if (track.kind === 'video') {
         hasVideo = false
         syncVideoStatus()
