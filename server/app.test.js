@@ -237,6 +237,10 @@ test('responses include browser security headers', async () => {
     /frame-ancestors 'none'/,
   )
   assert.match(
+    response.headers.get('content-security-policy'),
+    /img-src 'self' data: blob:/,
+  )
+  assert.match(
     response.headers.get('permissions-policy'),
     /camera=\(self\)/,
   )

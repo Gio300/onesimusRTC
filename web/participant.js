@@ -4,6 +4,7 @@ import {
   getToken,
   makeRoom,
   encode,
+  decode,
   setStatus,
   syncAudioButton,
 } from '/common.js'
@@ -69,6 +70,17 @@ async function start() {
         hasVideo = false
         syncVideoStatus()
       }
+    })
+    .on(L.RoomEvent.DataReceived, (payload) => {
+      const message = decode(payload)
+      if (message?.type !== 'presentation') return
+
+      const label = document.getElementById('presentation-title')
+      const presenting = message.mode === 'presentation'
+      label.hidden = !presenting
+      label.textContent = presenting
+        ? String(message.title || 'Study material').slice(0, 80)
+        : ''
     })
     .on(L.RoomEvent.ParticipantPermissionsChanged, (_previous, participant) => {
       if (participant === room.localParticipant) syncSpeakPermission()

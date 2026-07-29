@@ -17,6 +17,68 @@
       </div>
     </div>
 
+    <section class="presenter" aria-labelledby="presenter-title">
+      <div class="presenter-heading">
+        <div>
+          <p class="eyebrow">Host controls</p>
+          <h2 id="presenter-title">Study presentation</h2>
+        </div>
+        <span class="mode-badge" id="presentation-mode">Camera live</span>
+      </div>
+
+      <div class="presenter-actions">
+        <button id="weekly-study" class="action-tile" type="button">
+          <span class="action-icon" aria-hidden="true">&#128214;</span>
+          <span><strong>This week's study</strong><small>Open the official workbook</small></span>
+        </button>
+        <label class="action-tile" for="media-files">
+          <span class="action-icon" aria-hidden="true">&#128444;</span>
+          <span><strong>Add pictures or video</strong><small>Choose files from this phone</small></span>
+        </label>
+        <input id="media-files" type="file" accept="image/*,video/*" multiple hidden />
+        <button id="show-link-form" class="action-tile" type="button">
+          <span class="action-icon" aria-hidden="true">&#128279;</span>
+          <span><strong>Add JW link</strong><small>Queue an official shared link</small></span>
+        </button>
+        <button id="screen-share" class="action-tile" type="button">
+          <span class="action-icon" aria-hidden="true">&#9635;</span>
+          <span><strong>Share screen</strong><small>Present JW Library or a browser tab</small></span>
+        </button>
+      </div>
+
+      <form id="link-form" class="link-form" hidden>
+        <label for="study-link">Official JW.org link</label>
+        <div>
+          <input id="study-link" type="url" inputmode="url"
+            placeholder="https://www.jw.org/..." autocomplete="off" />
+          <button class="primary" type="submit">Add</button>
+        </div>
+        <p id="link-error" class="join-error" role="alert"></p>
+      </form>
+
+      <div class="queue-heading">
+        <h3>Presentation queue <span id="queue-count">0</span></h3>
+        <button id="clear-queue" class="text-button" type="button" hidden>Clear</button>
+      </div>
+      <ol id="presentation-queue" class="presentation-queue">
+        <li class="queue-empty">Add this week's pictures or videos, then tap Present.</li>
+      </ol>
+
+      <div class="presentation-controls">
+        <button id="previous-slide" class="ghost icon-command" type="button"
+          aria-label="Previous item" title="Previous item" disabled>&larr;</button>
+        <button id="present-slide" class="primary" type="button" disabled>Present</button>
+        <button id="next-slide" class="ghost icon-command" type="button"
+          aria-label="Next item" title="Next item" disabled>&rarr;</button>
+        <button id="return-camera" class="ghost" type="button" disabled>Camera</button>
+        <button id="speaker-pip" class="ghost" type="button" disabled>Hide speaker</button>
+      </div>
+      <p class="presenter-help" id="presenter-help">
+        Viewers receive one low-bandwidth feed. Pictures, video, and the speaker
+        are combined before they leave this phone.
+      </p>
+    </section>
+
     <div class="roster">
       <h3>Viewers &mdash; <span id="count">0</span></h3>
       <ul id="people"></ul>
@@ -32,6 +94,12 @@
   </div>
 
   <div id="audio-sink" hidden></div>
+  <div class="presentation-sources" aria-hidden="true">
+    <video id="source-camera" autoplay muted playsinline></video>
+    <video id="source-media" preload="metadata" playsinline></video>
+    <img id="source-image" alt="" />
+    <canvas id="presentation-canvas" width="960" height="540"></canvas>
+  </div>
 
   <script type="module" src="/caster.js"></script>
 </body>
