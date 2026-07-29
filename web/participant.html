@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OnesimusRTC - Viewer</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=20260729-1" />
   <script src="/vendor/livekit-client.umd.min.js"></script>
 </head>
 <body>
@@ -18,20 +18,53 @@
           <span class="pill" id="status">connecting...</span>
         </span>
       </div>
+      <div class="caption-overlay" id="caption-overlay" hidden></div>
     </div>
+
+    <section class="notice mic-invite" id="mic-invite" hidden aria-live="assertive">
+      <div>
+        <strong>The host invited you to speak</strong>
+        <small>Your browser needs your tap before it can request microphone access.</small>
+      </div>
+      <button id="accept-mic" class="talk" type="button">Enable microphone</button>
+    </section>
 
     <div class="controls">
       <button id="talk" class="talk" disabled>Waiting for host</button>
       <button id="hand" class="ghost">Raise hand</button>
+      <button id="captions" class="ghost">Captions on</button>
       <button id="audio" class="primary" hidden>Enable sound</button>
       <button id="leave" class="ghost">Leave</button>
     </div>
     <p class="hint meeting-hint" id="voice-help">You are listening with your camera
       blocked. Raise your hand when you want the host to enable your microphone.</p>
+
+    <section class="room-chat viewer-chat" aria-labelledby="room-chat-title">
+      <div class="room-chat-heading">
+        <div>
+          <p class="eyebrow">Room messages</p>
+          <h3 id="room-chat-title">Ask for a picture or share one</h3>
+        </div>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite">
+        <p class="chat-empty">Messages from the host appear here.</p>
+      </div>
+      <form id="chat-form" class="chat-compose">
+        <input id="chat-message" type="text" maxlength="500"
+          placeholder="Ask the host to show something" autocomplete="off" />
+        <button class="primary" type="submit">Send</button>
+      </form>
+      <label class="share-photo" for="chat-image">
+        <span aria-hidden="true">&#128247;</span>
+        <span><strong>Share a picture with the host</strong><small>The host chooses whether to put it on screen.</small></span>
+      </label>
+      <input id="chat-image" type="file" accept="image/*" capture="environment" hidden />
+      <p id="upload-status" class="presenter-help"></p>
+    </section>
   </div>
 
   <div id="audio-sink" hidden></div>
 
-  <script type="module" src="/participant.js"></script>
+  <script type="module" src="/participant.js?v=20260729-1"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OnesimusRTC &mdash; Caster</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=20260729-1" />
   <script src="/vendor/livekit-client.umd.min.js"></script>
 </head>
 <body>
@@ -15,7 +15,16 @@
         <span class="pill" id="roompill">room</span>
         <span class="pill" id="status">connecting&hellip;</span>
       </div>
+      <div class="caption-overlay" id="caption-overlay" hidden></div>
     </div>
+
+    <section class="notice hand-notice" id="hand-notice" hidden aria-live="assertive">
+      <div>
+        <strong id="hand-notice-title">A viewer raised a hand</strong>
+        <small>Open the viewer list to allow their microphone.</small>
+      </div>
+      <button id="review-hands" class="primary" type="button">Review</button>
+    </section>
 
     <section class="presenter" aria-labelledby="presenter-title">
       <div class="presenter-heading">
@@ -44,6 +53,14 @@
           <span class="action-icon" aria-hidden="true">&#9635;</span>
           <span><strong>Share screen</strong><small>Present JW Library or a browser tab</small></span>
         </button>
+        <button id="paste-image" class="action-tile" type="button">
+          <span class="action-icon" aria-hidden="true">&#128203;</span>
+          <span><strong>Paste a picture</strong><small>Use an image copied on this phone</small></span>
+        </button>
+        <button id="switch-camera" class="action-tile" type="button">
+          <span class="action-icon" aria-hidden="true">&#8635;</span>
+          <span><strong>Flip camera</strong><small>Switch between front and rear cameras</small></span>
+        </button>
       </div>
 
       <form id="link-form" class="link-form" hidden>
@@ -55,6 +72,27 @@
         </div>
         <p id="link-error" class="join-error" role="alert"></p>
       </form>
+
+      <div class="switcher-settings">
+        <label>
+          <span>On-screen layout</span>
+          <select id="presentation-layout">
+            <option value="pip">Material + speaker window</option>
+            <option value="speaker-left">Speaker left, material right</option>
+            <option value="speaker-right">Material left, speaker right</option>
+            <option value="material-only">Material only</option>
+          </select>
+        </label>
+        <label>
+          <span>Speaker window</span>
+          <select id="speaker-position">
+            <option value="bottom-right">Bottom right</option>
+            <option value="bottom-left">Bottom left</option>
+            <option value="top-right">Top right</option>
+            <option value="top-left">Top left</option>
+          </select>
+        </label>
+      </div>
 
       <div class="queue-heading">
         <h3>Presentation queue <span id="queue-count">0</span></h3>
@@ -73,16 +111,45 @@
         <button id="return-camera" class="ghost" type="button" disabled>Camera</button>
         <button id="speaker-pip" class="ghost" type="button" disabled>Hide speaker</button>
       </div>
+
+      <div class="automation-controls">
+        <button id="captions" class="ghost" type="button">Start captions</button>
+        <label class="toggle-row">
+          <input id="voice-commands" type="checkbox" />
+          <span>Show queued media when a speaker asks for it</span>
+        </label>
+        <p id="caption-help" class="presenter-help">
+          Captions also power commands such as “show the map,” “next picture,”
+          and “back to camera.”
+        </p>
+      </div>
       <p class="presenter-help" id="presenter-help">
         Viewers receive one low-bandwidth feed. Pictures, video, and the speaker
         are combined before they leave this phone.
       </p>
     </section>
 
-    <div class="roster">
+    <div class="roster" id="viewer-roster">
       <h3>Viewers &mdash; <span id="count">0</span></h3>
       <ul id="people"></ul>
     </div>
+
+    <section class="room-chat" aria-labelledby="room-chat-title">
+      <div class="room-chat-heading">
+        <div>
+          <p class="eyebrow">Room messages</p>
+          <h3 id="room-chat-title">Requests and shared pictures</h3>
+        </div>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite">
+        <p class="chat-empty">Viewer requests and approved photo shares appear here.</p>
+      </div>
+      <form id="chat-form" class="chat-compose">
+        <input id="chat-message" type="text" maxlength="500"
+          placeholder="Message everyone in the room" autocomplete="off" />
+        <button class="primary" type="submit">Send</button>
+      </form>
+    </section>
 
     <div class="controls">
       <button id="mic" class="ghost">Mute mic</button>
@@ -101,6 +168,6 @@
     <canvas id="presentation-canvas" width="960" height="540"></canvas>
   </div>
 
-  <script type="module" src="/caster.js"></script>
+  <script type="module" src="/caster.js?v=20260729-1"></script>
 </body>
 </html>

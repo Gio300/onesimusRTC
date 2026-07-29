@@ -9,7 +9,7 @@ import {
   syncAudioButton,
 } from '/common.js'
 
-const { room: roomName } = qs()
+const { room: roomName, name: casterName } = qs()
 const storedSession = sessionStorage.getItem('onesimusCasterSession')
 let casterSession = null
 try {
@@ -22,6 +22,7 @@ sessionStorage.removeItem('onesimusHostCode')
 document.getElementById('roompill').textContent = roomName
 
 const hands = new Map()
+const incomingMedia = new Map()
 let room
 let publishedVideoTrack
 let cameraSourceTrack
@@ -37,9 +38,18 @@ let renderFrame
 let lastRenderAt = 0
 let mode = 'camera'
 let speakerVisible = true
+let presentationLayout = 'pip'
+let speakerPosition = 'bottom-right'
+let cameraFacingMode = 'user'
 let videoMuted = false
 let activeIndex = -1
 let nextQueueId = 1
+let captionRecognition
+let captionsRunning = false
+let captionRestartTimer
+let captionHideTimer
+let currentCaption = ''
+let currentCaptionUntil = 0
 const queue = []
 
 const localVideo = document.getElementById('local')
@@ -50,6 +60,7 @@ const presentationCanvas = document.getElementById('presentation-canvas')
 const presentationContext = presentationCanvas.getContext('2d', { alpha: false })
 const modeBadge = document.getElementById('presentation-mode')
 const presenterHelp = document.getElementById('presenter-help')
+const captionOverlay = document.getElementById('caption-overlay')
 const weeklyStudyUrl = 'https://www.jw.org/en/library/jw-meeting-workbook/'
 
 function pruneDetachedAudio() {
@@ -57,6 +68,205 @@ function pruneDetachedAudio() {
     const tracks = element.srcObject?.getTracks?.() || []
     if (!tracks.some((track) => track.readyState === 'live')) element.remove()
   }
+}
+
+function participantLabel(participant) {
+  return participant?.name || participant?.identity || 'Viewer'
+}
+
+function appendChat(author, text, options = {}) {
+  const log = document.getElementById('chat-log')
+  log.querySelector('.chat-empty')?.remove()
+
+  const message = document.createElement('div')
+  message.className = 'chat-message'
+  message.classList.toggle('own', Boolean(options.own))
+  message.classList.toggle('media', Boolean(options.media))
+
+  const who = document.createElement('strong')
+  who.textContent = author
+  const body = document.createElement('span')
+  body.textContent = String(text || '').slice(0, 500)
+  message.append(who, body)
+
+  if (options.detail) {
+    const detail = document.createElement('small')
+    detail.textContent = options.detail
+    message.appendChild(detail)
+  }
+
+  log.appendChild(message)
+  log.scrollTop = log.scrollHeight
+}
+
+function showCaption(text, speaker = '') {
+  const clean = String(text || '').trim().slice(0, 220)
+  if (!clean) return
+  currentCaption = speaker ? `${speaker}: ${clean}` : clean
+  currentCaptionUntil = Date.now() + 6000
+  captionOverlay.textContent = currentCaption
+  captionOverlay.hidden = false
+  clearTimeout(captionHideTimer)
+  captionHideTimer = setTimeout(() => {
+    if (Date.now() >= currentCaptionUntil) {
+      captionOverlay.hidden = true
+      currentCaption = ''
+    }
+  }, 6200)
+}
+
+async function broadcastCaption(text, final, speaker) {
+  if (!room) return
+  await room.localParticipant.publishData(
+    encode({
+      type: 'caption',
+      text: String(text || '').slice(0, 220),
+      final: Boolean(final),
+      speaker,
+    }),
+    { reliable: Boolean(final) },
+  ).catch(() => {})
+}
+
+function normalizedWords(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(the|a|an|please|picture|image|video|slide|item|material)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function bestQueueMatch(request) {
+  const target = normalizedWords(request)
+  if (!target) return -1
+  const targetWords = target.split(' ')
+  let best = { index: -1, score: 0 }
+  queue.forEach((item, index) => {
+    const title = normalizedWords(item.title)
+    let score = 0
+    if (title === target) score += 20
+    if (title.includes(target) || target.includes(title)) score += 10
+    for (const word of targetWords) {
+      if (word.length > 2 && title.includes(word)) score += 2
+    }
+    if (score > best.score) best = { index, score }
+  })
+  return best.score >= 2 ? best.index : -1
+}
+
+async function handleVoiceCommand(transcript) {
+  if (!document.getElementById('voice-commands').checked) return
+  const text = normalizedWords(transcript)
+  if (!text) return
+
+  if (/\b(next|forward)\b/.test(text)) {
+    if (activeIndex < queue.length - 1) {
+      activeIndex += 1
+      renderQueue()
+      await presentActiveItem()
+      appendChat('Voice control', `Showing ${activeItem()?.title || 'the next item'}.`, { own: true })
+    }
+    return
+  }
+  if (/\b(previous|back one|go back)\b/.test(text)) {
+    if (activeIndex > 0) {
+      activeIndex -= 1
+      renderQueue()
+      await presentActiveItem()
+      appendChat('Voice control', `Showing ${activeItem()?.title || 'the previous item'}.`, { own: true })
+    }
+    return
+  }
+  if (/\b(back to camera|show camera|camera only|show the speaker)\b/.test(text)) {
+    await returnToCamera()
+    appendChat('Voice control', 'Camera is back on screen.', { own: true })
+    return
+  }
+  if (/\b(hide speaker|hide my camera)\b/.test(text)) {
+    speakerVisible = false
+    updateControlState()
+    return
+  }
+  if (/\b(show speaker|show my camera)\b/.test(text)) {
+    speakerVisible = true
+    updateControlState()
+    return
+  }
+
+  const showMatch = text.match(/\b(?:show|display|present|put up|open)\s+(.+)$/)
+  if (!showMatch) return
+  const index = bestQueueMatch(showMatch[1])
+  if (index < 0) return
+  activeIndex = index
+  renderQueue()
+  await presentActiveItem()
+  appendChat('Voice control', `Showing ${activeItem().title}.`, { own: true })
+}
+
+function createCaptionRecognition() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!Recognition) return null
+  const recognition = new Recognition()
+  recognition.continuous = true
+  recognition.interimResults = true
+  recognition.lang = navigator.language || 'en-US'
+  recognition.onresult = (event) => {
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const result = event.results[index]
+      const text = result[0]?.transcript?.trim()
+      if (!text) continue
+      const speaker = casterName || 'Host'
+      showCaption(text, speaker)
+      broadcastCaption(text, result.isFinal, speaker)
+      if (result.isFinal) {
+        handleVoiceCommand(text).catch((error) => setStatus(error.message))
+      }
+    }
+  }
+  recognition.onerror = (event) => {
+    if (!['aborted', 'no-speech'].includes(event.error)) {
+      document.getElementById('caption-help').textContent =
+        `Captions stopped: ${event.error}. Tap Start captions to retry.`
+      captionsRunning = false
+      syncCaptionButton()
+    }
+  }
+  recognition.onend = () => {
+    if (!captionsRunning) return
+    clearTimeout(captionRestartTimer)
+    captionRestartTimer = setTimeout(() => {
+      captionRecognition = createCaptionRecognition()
+      if (!captionRecognition) return
+      try {
+        captionRecognition.start()
+      } catch (error) {
+        captionsRunning = false
+        syncCaptionButton()
+        document.getElementById('caption-help').textContent =
+          `Captions stopped: ${error.message}. Tap Start captions to retry.`
+      }
+    }, 350)
+  }
+  return recognition
+}
+
+function syncCaptionButton() {
+  const button = document.getElementById('captions')
+  button.textContent = captionsRunning ? 'Stop captions' : 'Start captions'
+  button.classList.toggle('talk', captionsRunning)
+}
+
+function updateHandNotice() {
+  const raised = [...hands.entries()].filter(([, value]) => value?.up)
+  const notice = document.getElementById('hand-notice')
+  notice.hidden = raised.length === 0
+  if (!raised.length) return
+  const first = raised[0][1]?.name || raised[0][0]
+  document.getElementById('hand-notice-title').textContent =
+    raised.length === 1
+      ? `${first} raised a hand`
+      : `${raised.length} viewers raised their hands`
 }
 
 function activeItem() {
@@ -109,6 +319,8 @@ function updateControlState() {
   document.getElementById('speaker-pip').textContent = speakerVisible
     ? 'Hide speaker'
     : 'Show speaker'
+  document.getElementById('speaker-position').disabled =
+    presentationLayout !== 'pip'
   document.getElementById('clear-queue').hidden = !hasItems
   document.getElementById('queue-count').textContent = String(queue.length)
   modeBadge.textContent = mode === 'camera'
@@ -156,7 +368,9 @@ function renderQueue() {
     const title = document.createElement('strong')
     title.textContent = item.title
     const kind = document.createElement('small')
-    kind.textContent = itemKindLabel(item.kind)
+    kind.textContent = item.source
+      ? `${itemKindLabel(item.kind)} - ${item.source}`
+      : itemKindLabel(item.kind)
     copy.append(title, kind)
 
     const select = document.createElement('button')
@@ -214,6 +428,7 @@ function addFiles(files) {
       title: cleanItemName(file.name),
       url: URL.createObjectURL(file),
       objectUrl: true,
+      source: 'Host phone',
     })
   }
   if (activeIndex < 0 && queue.length) activeIndex = 0
@@ -236,6 +451,103 @@ function addLink(url) {
   })
   if (activeIndex < 0) activeIndex = 0
   renderQueue()
+}
+
+function base64ToBlob(value, mime) {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return new Blob([bytes], { type: mime })
+}
+
+function receiveSharedImage(message, participant) {
+  const sender = participantLabel(participant)
+  const key = `${participant.identity}:${message.id}`
+
+  if (message.type === 'media-start') {
+    const total = Number(message.total)
+    const size = Number(message.size)
+    const mime = String(message.mime || '')
+    if (
+      !Number.isInteger(total)
+      || total < 1
+      || total > 80
+      || !Number.isFinite(size)
+      || size < 1
+      || size > 450000
+      || !['image/jpeg', 'image/png', 'image/webp'].includes(mime)
+    ) return
+    incomingMedia.set(key, {
+      chunks: new Array(total),
+      mime,
+      size,
+      title: cleanItemName(message.name || `${sender} picture`),
+      sender,
+      received: 0,
+    })
+    appendChat(sender, 'is sharing a picture...', { media: true })
+    return
+  }
+
+  const transfer = incomingMedia.get(key)
+  if (!transfer) return
+  if (message.type === 'media-chunk') {
+    const index = Number(message.index)
+    if (!Number.isInteger(index) || index < 0 || index >= transfer.chunks.length) return
+    if (!transfer.chunks[index]) transfer.received += 1
+    transfer.chunks[index] = String(message.data || '')
+    return
+  }
+  if (message.type !== 'media-end') return
+
+  incomingMedia.delete(key)
+  if (
+    transfer.received !== transfer.chunks.length
+    || transfer.chunks.some((chunk) => !chunk)
+  ) {
+    appendChat('System', `${sender}'s picture did not finish uploading.`)
+    return
+  }
+
+  try {
+    const blob = base64ToBlob(transfer.chunks.join(''), transfer.mime)
+    if (blob.size > 450000) throw new Error('Picture is too large')
+    queue.push({
+      id: nextQueueId++,
+      kind: 'image',
+      title: transfer.title,
+      url: URL.createObjectURL(blob),
+      objectUrl: true,
+      source: `Shared by ${sender}`,
+    })
+    if (activeIndex < 0) activeIndex = 0
+    renderQueue()
+    appendChat(
+      sender,
+      `${transfer.title} was added to your presentation queue.`,
+      { media: true, detail: 'Nothing is shown until the host taps Present.' },
+    )
+  } catch {
+    appendChat('System', `${sender}'s picture could not be opened.`)
+  }
+}
+
+async function pasteClipboardImage() {
+  if (!navigator.clipboard?.read) {
+    throw new Error('Clipboard pictures are not supported here. Use Add pictures or video.')
+  }
+  const clipboardItems = await navigator.clipboard.read()
+  for (const item of clipboardItems) {
+    const type = item.types.find((value) => value.startsWith('image/'))
+    if (!type) continue
+    const blob = await item.getType(type)
+    const extension = type.split('/')[1] || 'png'
+    addFiles([new File([blob], `Pasted picture.${extension}`, { type })])
+    return
+  }
+  throw new Error('No picture is currently copied.')
 }
 
 function containRect(sourceWidth, sourceHeight, targetWidth, targetHeight) {
@@ -277,14 +589,26 @@ function roundedRect(context, x, y, width, height, radius) {
   context.closePath()
 }
 
-function drawContain(element, sourceWidth, sourceHeight) {
+function drawContain(element, sourceWidth, sourceHeight, target = null) {
+  const area = target || {
+    x: 0,
+    y: 0,
+    width: presentationCanvas.width,
+    height: presentationCanvas.height,
+  }
   const rect = containRect(
     sourceWidth,
     sourceHeight,
-    presentationCanvas.width,
-    presentationCanvas.height,
+    area.width,
+    area.height,
   )
-  presentationContext.drawImage(element, rect.x, rect.y, rect.width, rect.height)
+  presentationContext.drawImage(
+    element,
+    area.x + rect.x,
+    area.y + rect.y,
+    rect.width,
+    rect.height,
+  )
 }
 
 function wrapCanvasText(text, x, y, maxWidth, lineHeight, maxLines) {
@@ -307,33 +631,40 @@ function wrapCanvasText(text, x, y, maxWidth, lineHeight, maxLines) {
   })
 }
 
-function drawLinkCard(item) {
-  const width = presentationCanvas.width
-  const height = presentationCanvas.height
-  presentationContext.fillStyle = '#101725'
+function drawLinkCard(item, target = null) {
+  const area = target || {
+    x: 0,
+    y: 0,
+    width: presentationCanvas.width,
+    height: presentationCanvas.height,
+  }
+  const width = 960
+  const height = 540
+  presentationContext.save()
+  presentationContext.translate(area.x, area.y)
+  presentationContext.scale(area.width / width, area.height / height)
+  presentationContext.fillStyle = '#f4f7fb'
   presentationContext.fillRect(0, 0, width, height)
 
-  presentationContext.fillStyle = '#23c98a'
+  presentationContext.fillStyle = '#1976ed'
   presentationContext.fillRect(58, 64, 8, 302)
-  presentationContext.fillStyle = '#8fa7c8'
+  presentationContext.fillStyle = '#4e6381'
   presentationContext.font = '700 18px system-ui, sans-serif'
   presentationContext.fillText('OFFICIAL JW.ORG MATERIAL', 94, 102)
-  presentationContext.fillStyle = '#f4f7fb'
+  presentationContext.fillStyle = '#172033'
   presentationContext.font = '700 44px system-ui, sans-serif'
   wrapCanvasText(item.title, 94, 174, 700, 54, 3)
-  presentationContext.fillStyle = '#a9b8ce'
+  presentationContext.fillStyle = '#65758c'
   presentationContext.font = '20px system-ui, sans-serif'
   wrapCanvasText(item.url, 94, 348, 700, 28, 3)
+  presentationContext.restore()
 }
 
-function drawSpeakerPip() {
+function drawSpeaker(target, framed = true) {
   if (!speakerVisible || sourceCamera.readyState < 2 || !cameraSourceTrack?.enabled) {
     return
   }
-  const width = 250
-  const height = 142
-  const x = presentationCanvas.width - width - 24
-  const y = presentationCanvas.height - height - 52
+  const { x, y, width, height } = target
 
   presentationContext.save()
   roundedRect(presentationContext, x, y, width, height, 14)
@@ -353,10 +684,105 @@ function drawSpeakerPip() {
   )
   presentationContext.restore()
 
-  presentationContext.strokeStyle = '#ffffff'
-  presentationContext.lineWidth = 3
-  roundedRect(presentationContext, x, y, width, height, 14)
-  presentationContext.stroke()
+  if (framed) {
+    presentationContext.strokeStyle = '#ffffff'
+    presentationContext.lineWidth = 3
+    roundedRect(presentationContext, x, y, width, height, 14)
+    presentationContext.stroke()
+  }
+}
+
+function drawSpeakerPip() {
+  const width = 250
+  const height = 142
+  const right = presentationCanvas.width - width - 24
+  const bottomOffset = currentCaption && Date.now() < currentCaptionUntil ? 90 : 52
+  const bottom = presentationCanvas.height - height - bottomOffset
+  const positions = {
+    'top-left': { x: 24, y: 24 },
+    'top-right': { x: right, y: 24 },
+    'bottom-left': { x: 24, y: bottom },
+    'bottom-right': { x: right, y: bottom },
+  }
+  drawSpeaker({
+    ...(positions[speakerPosition] || positions['bottom-right']),
+    width,
+    height,
+  })
+}
+
+function drawMaterial(item, target) {
+  presentationContext.save()
+  roundedRect(
+    presentationContext,
+    target.x,
+    target.y,
+    target.width,
+    target.height,
+    target.width === presentationCanvas.width ? 0 : 12,
+  )
+  presentationContext.clip()
+
+  presentationContext.fillStyle = '#05070b'
+  presentationContext.fillRect(target.x, target.y, target.width, target.height)
+
+  if (!item) {
+    presentationContext.fillStyle = '#e8edf6'
+    presentationContext.font = '700 28px system-ui, sans-serif'
+    presentationContext.fillText(
+      'Choose an item to present',
+      target.x + 30,
+      target.y + 60,
+    )
+  } else if (item.kind === 'image' && sourceImage.complete) {
+    drawContain(
+      sourceImage,
+      sourceImage.naturalWidth,
+      sourceImage.naturalHeight,
+      target,
+    )
+  } else if (item.kind === 'video' && sourceMedia.readyState >= 2) {
+    drawContain(
+      sourceMedia,
+      sourceMedia.videoWidth,
+      sourceMedia.videoHeight,
+      target,
+    )
+  } else if (item.kind === 'link') {
+    drawLinkCard(item, target)
+  }
+
+  if (item?.kind !== 'link') {
+    const barHeight = 42
+    presentationContext.fillStyle = 'rgba(4, 8, 14, .82)'
+    presentationContext.fillRect(
+      target.x,
+      target.y + target.height - barHeight,
+      target.width,
+      barHeight,
+    )
+    presentationContext.fillStyle = '#e8edf6'
+    presentationContext.font = '600 18px system-ui, sans-serif'
+    presentationContext.fillText(
+      item?.title || 'Study material',
+      target.x + 20,
+      target.y + target.height - 15,
+    )
+  }
+  presentationContext.restore()
+}
+
+function drawCanvasCaption() {
+  if (!currentCaption || Date.now() >= currentCaptionUntil) return
+  const width = presentationCanvas.width
+  const height = presentationCanvas.height
+  presentationContext.fillStyle = 'rgba(0, 0, 0, .82)'
+  presentationContext.fillRect(40, height - 74, width - 80, 56)
+  presentationContext.fillStyle = '#ffffff'
+  presentationContext.font = '700 22px system-ui, sans-serif'
+  presentationContext.textAlign = 'center'
+  wrapCanvasText(currentCaption, width / 2, height - 42, width - 120, 25, 2)
+  presentationContext.textAlign = 'start'
 }
 
 function drawPresentationFrame(now = performance.now()) {
@@ -374,28 +800,28 @@ function drawPresentationFrame(now = performance.now()) {
   presentationContext.fillStyle = '#05070b'
   presentationContext.fillRect(0, 0, width, height)
 
-  if (!item) {
-    presentationContext.fillStyle = '#e8edf6'
-    presentationContext.font = '700 32px system-ui, sans-serif'
-    presentationContext.fillText('Choose an item to present', 52, 92)
-  } else if (item.kind === 'image' && sourceImage.complete) {
-    drawContain(sourceImage, sourceImage.naturalWidth, sourceImage.naturalHeight)
-  } else if (item.kind === 'video' && sourceMedia.readyState >= 2) {
-    drawContain(sourceMedia, sourceMedia.videoWidth, sourceMedia.videoHeight)
-  } else if (item.kind === 'link') {
-    drawLinkCard(item)
+  if (
+    presentationLayout === 'speaker-left'
+    && speakerVisible
+  ) {
+    const speaker = { x: 10, y: 10, width: 340, height: 520 }
+    const material = { x: 360, y: 10, width: 590, height: 520 }
+    drawSpeaker(speaker)
+    drawMaterial(item, material)
+  } else if (
+    presentationLayout === 'speaker-right'
+    && speakerVisible
+  ) {
+    const material = { x: 10, y: 10, width: 590, height: 520 }
+    const speaker = { x: 610, y: 10, width: 340, height: 520 }
+    drawMaterial(item, material)
+    drawSpeaker(speaker)
+  } else {
+    drawMaterial(item, { x: 0, y: 0, width, height })
+    if (presentationLayout === 'pip') drawSpeakerPip()
   }
 
-  if (item?.kind !== 'link') {
-    const barHeight = 42
-    presentationContext.fillStyle = 'rgba(4, 8, 14, .78)'
-    presentationContext.fillRect(0, height - barHeight, width, barHeight)
-    presentationContext.fillStyle = '#e8edf6'
-    presentationContext.font = '600 18px system-ui, sans-serif'
-    presentationContext.fillText(item?.title || 'Study material', 20, height - 15)
-  }
-
-  drawSpeakerPip()
+  drawCanvasCaption()
 }
 
 async function stopMediaAudio() {
@@ -543,6 +969,41 @@ async function returnToCamera() {
   await broadcastPresentationState()
 }
 
+async function switchCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Camera switching is not available in this browser.')
+  }
+  const targetFacing = cameraFacingMode === 'environment' ? 'user' : 'environment'
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: targetFacing },
+      width: { ideal: 640 },
+      height: { ideal: 360 },
+    },
+    audio: false,
+  })
+  const nextSource = stream.getVideoTracks()[0]
+  if (!nextSource) throw new Error('The other camera could not be opened.')
+
+  const oldSource = cameraSourceTrack
+  cameraSourceTrack = nextSource
+  cameraFacingMode = nextSource.getSettings().facingMode || targetFacing
+  sourceCamera.srcObject = new MediaStream([cameraSourceTrack])
+  await sourceCamera.play().catch(() => {})
+
+  if (mode === 'camera') {
+    const sendTrack = cameraSourceTrack.clone()
+    sendTrack.enabled = true
+    await replaceOutgoingVideo(sendTrack)
+    await publishedVideoTrack.unmute()
+  }
+  oldSource?.stop()
+  document.getElementById('switch-camera').querySelector('small').textContent =
+    cameraFacingMode === 'environment'
+      ? 'Rear camera active - tap for front'
+      : 'Front camera active - tap for rear'
+}
+
 async function shareScreen() {
   const L = LK()
   if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -626,7 +1087,21 @@ function renderRoster() {
           !allowed,
           moderatorToken,
         )
-        if (!allowed) hands.set(participant.identity, { ...hand, up: false })
+        await room.localParticipant.publishData(
+          encode({ type: 'mic-invite', allowed: !allowed }),
+          {
+            reliable: true,
+            destinationIdentities: [participant.identity],
+          },
+        ).catch(() => {})
+        if (!allowed) {
+          hands.set(participant.identity, { ...hand, up: false })
+          appendChat(
+            'Host controls',
+            `${participantLabel(participant)} was invited to enable their microphone.`,
+            { own: true },
+          )
+        }
       } catch (error) {
         setStatus(error.message)
       } finally {
@@ -638,6 +1113,7 @@ function renderRoster() {
     item.append(details, button)
     list.appendChild(item)
   }
+  updateHandNotice()
 }
 
 async function start() {
@@ -659,6 +1135,9 @@ async function start() {
     .on(L.RoomEvent.ParticipantConnected, renderRoster)
     .on(L.RoomEvent.ParticipantDisconnected, (participant) => {
       hands.delete(participant.identity)
+      for (const key of incomingMedia.keys()) {
+        if (key.startsWith(`${participant.identity}:`)) incomingMedia.delete(key)
+      }
       renderRoster()
     })
     .on(L.RoomEvent.ActiveSpeakersChanged, renderRoster)
@@ -679,12 +1158,36 @@ async function start() {
     })
     .on(L.RoomEvent.DataReceived, (payload, participant) => {
       const message = decode(payload)
+      if (!participant || typeof message?.type !== 'string') return
       if (message?.type === 'hand') {
         hands.set(participant.identity, {
           name: participant.name,
           up: Boolean(message.up),
         })
+        if (message.up) {
+          navigator.vibrate?.([120, 80, 120])
+          appendChat(
+            participantLabel(participant),
+            'raised a hand to request the microphone.',
+          )
+        }
         renderRoster()
+        return
+      }
+      if (message.type === 'chat') {
+        appendChat(participantLabel(participant), message.text)
+        return
+      }
+      if (message.type === 'caption') {
+        const speaker = String(message.speaker || participantLabel(participant)).slice(0, 64)
+        showCaption(message.text, speaker)
+        if (message.final) {
+          handleVoiceCommand(message.text).catch((error) => setStatus(error.message))
+        }
+        return
+      }
+      if (message.type.startsWith('media-')) {
+        receiveSharedImage(message, participant)
       }
     })
     .on(L.RoomEvent.AudioPlaybackStatusChanged, () => {
@@ -705,6 +1208,7 @@ async function start() {
     publishedVideoTrack = cameraPublication.track
     outgoingVideoTrack = publishedVideoTrack.mediaStreamTrack
     cameraSourceTrack = outgoingVideoTrack.clone()
+    cameraFacingMode = cameraSourceTrack.getSettings().facingMode || 'user'
     sourceCamera.srcObject = new MediaStream([cameraSourceTrack])
     await sourceCamera.play().catch(() => {})
     publishedVideoTrack.attach(localVideo)
@@ -752,6 +1256,9 @@ document.getElementById('share').onclick = async () => {
 }
 
 document.getElementById('leave').onclick = async () => {
+  captionsRunning = false
+  clearTimeout(captionRestartTimer)
+  captionRecognition?.abort()
   await stopMediaAudio()
   if (mediaAudioContext) await mediaAudioContext.close().catch(() => {})
   if (renderFrame) cancelAnimationFrame(renderFrame)
@@ -772,6 +1279,14 @@ document.getElementById('weekly-study').onclick = () => {
 document.getElementById('media-files').onchange = (event) => {
   addFiles([...event.target.files])
   event.target.value = ''
+}
+
+document.getElementById('paste-image').onclick = () => {
+  pasteClipboardImage().catch((error) => setStatus(error.message))
+}
+
+document.getElementById('switch-camera').onclick = () => {
+  switchCamera().catch((error) => setStatus(error.message))
 }
 
 document.getElementById('show-link-form').onclick = () => {
@@ -824,6 +1339,61 @@ document.getElementById('return-camera').onclick = () => {
 document.getElementById('speaker-pip').onclick = () => {
   speakerVisible = !speakerVisible
   updateControlState()
+}
+
+document.getElementById('presentation-layout').onchange = (event) => {
+  presentationLayout = event.target.value
+  updateControlState()
+}
+
+document.getElementById('speaker-position').onchange = (event) => {
+  speakerPosition = event.target.value
+}
+
+document.getElementById('captions').onclick = () => {
+  if (captionsRunning) {
+    captionsRunning = false
+    clearTimeout(captionRestartTimer)
+    captionRecognition?.stop()
+    captionRecognition = null
+    syncCaptionButton()
+    return
+  }
+  captionRecognition = createCaptionRecognition()
+  if (!captionRecognition) {
+    document.getElementById('caption-help').textContent =
+      'Live captions are not supported in this browser. Use current Chrome on Android or desktop.'
+    return
+  }
+  try {
+    captionsRunning = true
+    captionRecognition.start()
+    syncCaptionButton()
+  } catch (error) {
+    captionsRunning = false
+    syncCaptionButton()
+    setStatus(error.message)
+  }
+}
+
+document.getElementById('review-hands').onclick = () => {
+  document.getElementById('viewer-roster').scrollIntoView({
+    behavior: 'smooth',
+    block: 'center',
+  })
+}
+
+document.getElementById('chat-form').onsubmit = async (event) => {
+  event.preventDefault()
+  const input = document.getElementById('chat-message')
+  const text = input.value.trim()
+  if (!text || !room) return
+  input.value = ''
+  appendChat(casterName || 'Host', text, { own: true })
+  await room.localParticipant.publishData(
+    encode({ type: 'chat', text }),
+    { reliable: true },
+  ).catch((error) => setStatus(error.message))
 }
 
 document.getElementById('screen-share').onclick = () => {
