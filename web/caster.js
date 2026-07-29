@@ -47,10 +47,15 @@ let activeIndex = -1
 let nextQueueId = 1
 let captionRecognition
 let captionsRunning = false
+let captionStartPending = false
 let captionRestartTimer
 let captionHideTimer
 let currentCaption = ''
 let currentCaptionUntil = 0
+let cameraRecoveryTimer
+let cameraRecoveryInFlight
+let cameraRecoveryRequested = false
+const captionSubscribers = new Set()
 const queue = []
 
 const localVideo = document.getElementById('local')
@@ -84,6 +89,104 @@ async function copyViewerLink(button) {
   setStatus('viewer link copied')
 }
 
+function cameraConstraints() {
+  return {
+    facingMode: { ideal: cameraFacingMode },
+    width: { ideal: 640 },
+    height: { ideal: 360 },
+  }
+}
+
+async function restoreCameraSource() {
+  if (!navigator.mediaDevices?.getUserMedia || !publishedVideoTrack) return false
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: cameraConstraints(),
+    audio: false,
+  })
+  const nextSource = stream.getVideoTracks()[0]
+  if (!nextSource) throw new Error('The camera could not resume after sharing.')
+
+  const oldSource = cameraSourceTrack
+  try {
+    cameraSourceTrack = nextSource
+    cameraFacingMode = nextSource.getSettings().facingMode || cameraFacingMode
+    sourceCamera.srcObject = new MediaStream([cameraSourceTrack])
+    await sourceCamera.play().catch(() => {})
+
+    if (mode === 'camera') {
+      const sendTrack = cameraSourceTrack.clone()
+      sendTrack.enabled = true
+      await replaceOutgoingVideo(sendTrack)
+      if (videoMuted) {
+        await publishedVideoTrack.mute()
+      } else {
+        await publishedVideoTrack.unmute()
+      }
+    }
+    oldSource?.stop()
+    await localVideo.play().catch(() => {})
+    return true
+  } catch (error) {
+    nextSource.stop()
+    cameraSourceTrack = oldSource
+    if (oldSource?.readyState === 'live') {
+      sourceCamera.srcObject = new MediaStream([oldSource])
+      await sourceCamera.play().catch(() => {})
+    }
+    throw error
+  }
+}
+
+async function ensureCameraFeed(force = false) {
+  if (!room || mode !== 'camera' || document.hidden) return false
+  if (room.state !== 'connected') return false
+  if (cameraRecoveryInFlight) return cameraRecoveryInFlight
+
+  cameraRecoveryInFlight = (async () => {
+    const outgoing = publishedVideoTrack?.mediaStreamTrack || outgoingVideoTrack
+    const sourceNeedsRestart =
+      !cameraSourceTrack
+      || cameraSourceTrack.readyState !== 'live'
+      || cameraSourceTrack.muted
+    const outgoingNeedsRestart =
+      !outgoing
+      || outgoing.readyState !== 'live'
+      || outgoing.muted
+
+    if (force || sourceNeedsRestart || outgoingNeedsRestart) {
+      await restoreCameraSource()
+    } else {
+      await sourceCamera.play().catch(() => {})
+      await localVideo.play().catch(() => {})
+      if (!videoMuted) await publishedVideoTrack?.unmute()
+    }
+    setStatus('live')
+    return true
+  })()
+
+  try {
+    return await cameraRecoveryInFlight
+  } finally {
+    cameraRecoveryInFlight = null
+  }
+}
+
+function scheduleCameraRecovery(force = false, delay = 100) {
+  cameraRecoveryRequested = cameraRecoveryRequested || force
+  clearTimeout(cameraRecoveryTimer)
+  cameraRecoveryTimer = setTimeout(async () => {
+    if (document.hidden) return
+    try {
+      const recovered = await ensureCameraFeed(cameraRecoveryRequested)
+      if (recovered) cameraRecoveryRequested = false
+    } catch (error) {
+      setStatus(`camera reconnecting: ${error.message}`)
+      scheduleCameraRecovery(false, 1500)
+    }
+  }, delay)
+}
+
 async function shareViewerInvitation(button) {
   const shareData = {
     title: `Join ${casterName || 'the host'} on OnesimosRTC`,
@@ -92,12 +195,16 @@ async function shareViewerInvitation(button) {
   }
 
   if (navigator.share) {
+    cameraRecoveryRequested = true
+    setStatus('sharing invite - room stays connected')
     try {
       await navigator.share(shareData)
       flashAction(button, 'Sent')
       return
     } catch (error) {
       if (error?.name === 'AbortError') return
+    } finally {
+      scheduleCameraRecovery(true)
     }
   }
 
@@ -256,6 +363,15 @@ function initializeCasterShell() {
   floatingWindows.forEach(makeDraggable)
   window.addEventListener('resize', syncCameraFloor)
   window.addEventListener('orientationchange', () => setTimeout(syncCameraFloor, 150))
+  window.addEventListener('pageshow', () => scheduleCameraRecovery(cameraRecoveryRequested))
+  window.addEventListener('focus', () => scheduleCameraRecovery(cameraRecoveryRequested))
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (mode === 'camera') cameraRecoveryRequested = true
+      return
+    }
+    scheduleCameraRecovery(cameraRecoveryRequested)
+  })
 
   sheetBackdrop.onclick = closeSheets
   document.querySelectorAll('[data-close-sheet]').forEach((button) => {
@@ -389,6 +505,26 @@ async function broadcastCaption(text, final, speaker) {
   ).catch(() => {})
 }
 
+async function broadcastCaptionStatus(active, message, destinationIdentities = []) {
+  if (!room) return
+  const options = { reliable: true }
+  if (destinationIdentities.length) {
+    options.destinationIdentities = destinationIdentities
+  }
+  await room.localParticipant.publishData(
+    encode({
+      type: 'caption-status',
+      active: Boolean(active),
+      message: String(message || '').slice(0, 180),
+    }),
+    options,
+  ).catch(() => {})
+}
+
+function setCaptionHelp(message) {
+  document.getElementById('caption-help').textContent = message
+}
+
 function normalizedWords(value) {
   return String(value || '')
     .toLowerCase()
@@ -472,6 +608,13 @@ function createCaptionRecognition() {
   recognition.continuous = true
   recognition.interimResults = true
   recognition.lang = navigator.language || 'en-US'
+  recognition.onstart = () => {
+    captionStartPending = false
+    captionsRunning = true
+    syncCaptionButton()
+    setCaptionHelp('Captions are live for everyone who has CC turned on.')
+    broadcastCaptionStatus(true, 'Captions are live.')
+  }
   recognition.onresult = (event) => {
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       const result = event.results[index]
@@ -479,7 +622,7 @@ function createCaptionRecognition() {
       if (!text) continue
       const speaker = casterName || 'Host'
       showCaption(text, speaker)
-      broadcastCaption(text, result.isFinal, speaker)
+      broadcastCaption(text, result.isFinal, speaker).catch(() => {})
       if (result.isFinal) {
         handleVoiceCommand(text).catch((error) => setStatus(error.message))
       }
@@ -487,25 +630,37 @@ function createCaptionRecognition() {
   }
   recognition.onerror = (event) => {
     if (!['aborted', 'no-speech'].includes(event.error)) {
-      document.getElementById('caption-help').textContent =
-        `Captions stopped: ${event.error}. Tap Start captions to retry.`
+      const message = event.error === 'not-allowed'
+        ? 'Caption microphone access was blocked. Allow microphone access, then tap Start captions.'
+        : `Captions stopped: ${event.error}. Tap Start captions to retry.`
+      setCaptionHelp(message)
       captionsRunning = false
+      captionStartPending = false
       syncCaptionButton()
+      broadcastCaptionStatus(false, message)
     }
   }
   recognition.onend = () => {
+    captionStartPending = false
     if (!captionsRunning) return
     clearTimeout(captionRestartTimer)
     captionRestartTimer = setTimeout(() => {
       captionRecognition = createCaptionRecognition()
-      if (!captionRecognition) return
+      if (!captionRecognition) {
+        captionsRunning = false
+        syncCaptionButton()
+        return
+      }
       try {
+        captionStartPending = true
         captionRecognition.start()
       } catch (error) {
         captionsRunning = false
+        captionStartPending = false
         syncCaptionButton()
-        document.getElementById('caption-help').textContent =
-          `Captions stopped: ${error.message}. Tap Start captions to retry.`
+        const message = `Captions stopped: ${error.message}. Tap Start captions to retry.`
+        setCaptionHelp(message)
+        broadcastCaptionStatus(false, message)
       }
     }, 350)
   }
@@ -514,8 +669,66 @@ function createCaptionRecognition() {
 
 function syncCaptionButton() {
   const button = document.getElementById('captions')
-  button.textContent = captionsRunning ? 'Stop captions' : 'Start captions'
-  button.classList.toggle('talk', captionsRunning)
+  button.textContent = captionStartPending
+    ? 'Starting captions...'
+    : captionsRunning
+      ? 'Stop captions'
+      : 'Start captions'
+  button.classList.toggle('talk', captionsRunning || captionStartPending)
+  button.setAttribute('aria-pressed', String(captionsRunning || captionStartPending))
+}
+
+async function startCaptions(destinationIdentity = '') {
+  if (captionsRunning || captionStartPending) {
+    if (destinationIdentity) {
+      await broadcastCaptionStatus(
+        true,
+        captionsRunning ? 'Captions are live.' : 'Captions are starting.',
+        [destinationIdentity],
+      )
+    }
+    return true
+  }
+
+  captionRecognition = createCaptionRecognition()
+  if (!captionRecognition) {
+    const message =
+      'Live captions are not supported by this browser. Open the host studio in current Chrome.'
+    setCaptionHelp(message)
+    await broadcastCaptionStatus(false, message)
+    return false
+  }
+
+  try {
+    captionStartPending = true
+    setCaptionHelp('Starting captions...')
+    syncCaptionButton()
+    captionRecognition.start()
+    return true
+  } catch (error) {
+    captionsRunning = false
+    captionStartPending = false
+    syncCaptionButton()
+    const message = `Captions could not start: ${error.message}. Tap Start captions to retry.`
+    setCaptionHelp(message)
+    await broadcastCaptionStatus(false, message)
+    return false
+  }
+}
+
+function stopCaptions() {
+  captionsRunning = false
+  captionStartPending = false
+  clearTimeout(captionRestartTimer)
+  try {
+    captionRecognition?.stop()
+  } catch {
+    captionRecognition?.abort()
+  }
+  captionRecognition = null
+  syncCaptionButton()
+  setCaptionHelp('Captions are off. Tap Start captions to turn them back on.')
+  broadcastCaptionStatus(false, 'The host turned captions off.')
 }
 
 function updateHandNotice() {
@@ -1402,6 +1615,7 @@ async function start() {
     .on(L.RoomEvent.ParticipantConnected, renderRoster)
     .on(L.RoomEvent.ParticipantDisconnected, (participant) => {
       hands.delete(participant.identity)
+      captionSubscribers.delete(participant.identity)
       for (const key of incomingMedia.keys()) {
         if (key.startsWith(`${participant.identity}:`)) incomingMedia.delete(key)
       }
@@ -1453,6 +1667,15 @@ async function start() {
         }
         return
       }
+      if (message.type === 'caption-subscription') {
+        if (message.enabled) {
+          captionSubscribers.add(participant.identity)
+          startCaptions(participant.identity).catch(() => {})
+        } else {
+          captionSubscribers.delete(participant.identity)
+        }
+        return
+      }
       if (message.type.startsWith('media-')) {
         receiveSharedImage(message, participant)
       }
@@ -1461,7 +1684,10 @@ async function start() {
       syncAudioButton(room, document.getElementById('audio'))
     })
     .on(L.RoomEvent.Reconnecting, () => setStatus('reconnecting...'))
-    .on(L.RoomEvent.Reconnected, () => setStatus('live'))
+    .on(L.RoomEvent.Reconnected, () => {
+      setStatus('live')
+      scheduleCameraRecovery(true)
+    })
     .on(L.RoomEvent.Disconnected, () => setStatus('disconnected'))
 
   await room.connect(livekitUrl, token)
@@ -1485,6 +1711,7 @@ async function start() {
   syncAudioButton(room, document.getElementById('audio'))
   renderRoster()
   renderQueue()
+  startCaptions().catch(() => {})
 }
 
 document.getElementById('mic').onclick = async () => {
@@ -1613,29 +1840,11 @@ document.getElementById('speaker-position').onchange = (event) => {
 }
 
 document.getElementById('captions').onclick = () => {
-  if (captionsRunning) {
-    captionsRunning = false
-    clearTimeout(captionRestartTimer)
-    captionRecognition?.stop()
-    captionRecognition = null
-    syncCaptionButton()
+  if (captionsRunning || captionStartPending) {
+    stopCaptions()
     return
   }
-  captionRecognition = createCaptionRecognition()
-  if (!captionRecognition) {
-    document.getElementById('caption-help').textContent =
-      'Live captions are not supported in this browser. Use current Chrome on Android or desktop.'
-    return
-  }
-  try {
-    captionsRunning = true
-    captionRecognition.start()
-    syncCaptionButton()
-  } catch (error) {
-    captionsRunning = false
-    syncCaptionButton()
-    setStatus(error.message)
-  }
+  startCaptions().catch((error) => setStatus(error.message))
 }
 
 document.getElementById('review-hands').onclick = () => {

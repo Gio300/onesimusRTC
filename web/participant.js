@@ -17,12 +17,38 @@ let handUp = false
 let hasVideo = false
 let micInvitePending = false
 let captionsVisible = true
+let captionHostActive = false
 let captionRecognition
 let captionRecognitionActive = false
 let captionRestartTimer
 let captionHideTimer
 
 const captionOverlay = document.getElementById('caption-overlay')
+
+function syncCaptionControl(message = '') {
+  const button = document.getElementById('captions')
+  button.textContent = captionsVisible ? 'CC on' : 'CC off'
+  button.classList.toggle('talk', captionsVisible)
+  button.setAttribute('aria-pressed', String(captionsVisible))
+  document.getElementById('caption-status').textContent = message || (
+    !captionsVisible
+      ? 'Captions are hidden.'
+      : captionHostActive
+        ? 'Captions are live.'
+        : 'Captions are on. Waiting for the host to speak.'
+  )
+}
+
+async function publishCaptionPreference() {
+  if (!room) return
+  await room.localParticipant.publishData(
+    encode({
+      type: 'caption-subscription',
+      enabled: captionsVisible,
+    }),
+    { reliable: true },
+  ).catch(() => {})
+}
 
 function appendChat(author, text, options = {}) {
   const log = document.getElementById('chat-log')
@@ -43,6 +69,8 @@ function showCaption(text, speaker = '') {
   if (!captionsVisible) return
   const clean = String(text || '').trim().slice(0, 220)
   if (!clean) return
+  captionHostActive = true
+  syncCaptionControl('Captions are live.')
   captionOverlay.textContent = speaker ? `${speaker}: ${clean}` : clean
   captionOverlay.hidden = false
   clearTimeout(captionHideTimer)
@@ -337,6 +365,17 @@ async function start() {
         )
         return
       }
+      if (message?.type === 'caption-status') {
+        captionHostActive = Boolean(message.active)
+        syncCaptionControl(
+          String(message.message || (
+            captionHostActive
+              ? 'Captions are live.'
+              : 'The host has not started captions.'
+          )).slice(0, 180),
+        )
+        return
+      }
       if (message?.type === 'chat') {
         appendChat(participant?.name || participant?.identity || 'Host', message.text)
       }
@@ -355,7 +394,8 @@ async function start() {
   syncVideoStatus()
   syncAudioButton(room, document.getElementById('audio'))
   await syncSpeakPermission()
-  document.getElementById('captions').classList.toggle('talk', captionsVisible)
+  syncCaptionControl()
+  await publishCaptionPreference()
 }
 
 async function toggleMicrophone(forceEnable = false) {
@@ -405,12 +445,11 @@ document.getElementById('audio').onclick = async () => {
   syncAudioButton(room, document.getElementById('audio'))
 }
 
-document.getElementById('captions').onclick = () => {
+document.getElementById('captions').onclick = async () => {
   captionsVisible = !captionsVisible
-  const button = document.getElementById('captions')
-  button.textContent = captionsVisible ? 'Captions on' : 'Captions off'
-  button.classList.toggle('talk', captionsVisible)
   if (!captionsVisible) captionOverlay.hidden = true
+  syncCaptionControl()
+  await publishCaptionPreference()
   syncLocalCaptionRecognition()
 }
 
