@@ -54,7 +54,6 @@ let currentCaption = ''
 let currentCaptionUntil = 0
 let cameraRecoveryTimer
 let cameraRecoveryInFlight
-let cameraRecoveryRequested = false
 const captionSubscribers = new Set()
 const queue = []
 
@@ -97,6 +96,14 @@ function cameraConstraints() {
   }
 }
 
+function watchCameraTrack(track) {
+  if (!track) return
+  track.addEventListener('ended', () => {
+    if (track !== cameraSourceTrack || mode !== 'camera') return
+    scheduleCameraRecovery(250)
+  }, { once: true })
+}
+
 async function restoreCameraSource() {
   if (!navigator.mediaDevices?.getUserMedia || !publishedVideoTrack) return false
 
@@ -110,6 +117,7 @@ async function restoreCameraSource() {
   const oldSource = cameraSourceTrack
   try {
     cameraSourceTrack = nextSource
+    watchCameraTrack(cameraSourceTrack)
     cameraFacingMode = nextSource.getSettings().facingMode || cameraFacingMode
     sourceCamera.srcObject = new MediaStream([cameraSourceTrack])
     await sourceCamera.play().catch(() => {})
@@ -138,7 +146,7 @@ async function restoreCameraSource() {
   }
 }
 
-async function ensureCameraFeed(force = false) {
+async function ensureCameraFeed() {
   if (!room || mode !== 'camera' || document.hidden) return false
   if (room.state !== 'connected') return false
   if (cameraRecoveryInFlight) return cameraRecoveryInFlight
@@ -148,13 +156,11 @@ async function ensureCameraFeed(force = false) {
     const sourceNeedsRestart =
       !cameraSourceTrack
       || cameraSourceTrack.readyState !== 'live'
-      || cameraSourceTrack.muted
     const outgoingNeedsRestart =
       !outgoing
       || outgoing.readyState !== 'live'
-      || outgoing.muted
 
-    if (force || sourceNeedsRestart || outgoingNeedsRestart) {
+    if (sourceNeedsRestart || outgoingNeedsRestart) {
       await restoreCameraSource()
     } else {
       await sourceCamera.play().catch(() => {})
@@ -172,17 +178,15 @@ async function ensureCameraFeed(force = false) {
   }
 }
 
-function scheduleCameraRecovery(force = false, delay = 100) {
-  cameraRecoveryRequested = cameraRecoveryRequested || force
+function scheduleCameraRecovery(delay = 250) {
   clearTimeout(cameraRecoveryTimer)
   cameraRecoveryTimer = setTimeout(async () => {
     if (document.hidden) return
     try {
-      const recovered = await ensureCameraFeed(cameraRecoveryRequested)
-      if (recovered) cameraRecoveryRequested = false
+      await ensureCameraFeed()
     } catch (error) {
       setStatus(`camera reconnecting: ${error.message}`)
-      scheduleCameraRecovery(false, 1500)
+      scheduleCameraRecovery(1500)
     }
   }, delay)
 }
@@ -195,7 +199,6 @@ async function shareViewerInvitation(button) {
   }
 
   if (navigator.share) {
-    cameraRecoveryRequested = true
     setStatus('sharing invite - room stays connected')
     try {
       await navigator.share(shareData)
@@ -204,7 +207,7 @@ async function shareViewerInvitation(button) {
     } catch (error) {
       if (error?.name === 'AbortError') return
     } finally {
-      scheduleCameraRecovery(true)
+      scheduleCameraRecovery(450)
     }
   }
 
@@ -363,14 +366,10 @@ function initializeCasterShell() {
   floatingWindows.forEach(makeDraggable)
   window.addEventListener('resize', syncCameraFloor)
   window.addEventListener('orientationchange', () => setTimeout(syncCameraFloor, 150))
-  window.addEventListener('pageshow', () => scheduleCameraRecovery(cameraRecoveryRequested))
-  window.addEventListener('focus', () => scheduleCameraRecovery(cameraRecoveryRequested))
+  window.addEventListener('pageshow', () => scheduleCameraRecovery())
+  window.addEventListener('focus', () => scheduleCameraRecovery())
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      if (mode === 'camera') cameraRecoveryRequested = true
-      return
-    }
-    scheduleCameraRecovery(cameraRecoveryRequested)
+    if (!document.hidden) scheduleCameraRecovery()
   })
 
   sheetBackdrop.onclick = closeSheets
@@ -1462,6 +1461,7 @@ async function switchCamera() {
 
   const oldSource = cameraSourceTrack
   cameraSourceTrack = nextSource
+  watchCameraTrack(cameraSourceTrack)
   cameraFacingMode = nextSource.getSettings().facingMode || targetFacing
   sourceCamera.srcObject = new MediaStream([cameraSourceTrack])
   await sourceCamera.play().catch(() => {})
@@ -1686,7 +1686,7 @@ async function start() {
     .on(L.RoomEvent.Reconnecting, () => setStatus('reconnecting...'))
     .on(L.RoomEvent.Reconnected, () => {
       setStatus('live')
-      scheduleCameraRecovery(true)
+      scheduleCameraRecovery()
     })
     .on(L.RoomEvent.Disconnected, () => setStatus('disconnected'))
 
@@ -1701,6 +1701,7 @@ async function start() {
     publishedVideoTrack = cameraPublication.track
     outgoingVideoTrack = publishedVideoTrack.mediaStreamTrack
     cameraSourceTrack = outgoingVideoTrack.clone()
+    watchCameraTrack(cameraSourceTrack)
     cameraFacingMode = cameraSourceTrack.getSettings().facingMode || 'user'
     sourceCamera.srcObject = new MediaStream([cameraSourceTrack])
     await sourceCamera.play().catch(() => {})
