@@ -20,7 +20,6 @@ let captionsVisible = true
 let captionHostActive = false
 let captionRecognition
 let captionRecognitionActive = false
-let captionRestartTimer
 let captionHideTimer
 
 const captionOverlay = document.getElementById('caption-overlay')
@@ -118,24 +117,7 @@ function createCaptionRecognition() {
     }
   }
   recognition.onend = () => {
-    if (
-      !captionsVisible
-      || !room?.localParticipant.isMicrophoneEnabled
-    ) {
-      captionRecognitionActive = false
-      return
-    }
-    clearTimeout(captionRestartTimer)
-    captionRestartTimer = setTimeout(() => {
-      captionRecognition = createCaptionRecognition()
-      if (!captionRecognition) return
-      try {
-        captionRecognition.start()
-        captionRecognitionActive = true
-      } catch {
-        captionRecognitionActive = false
-      }
-    }, 350)
+    captionRecognitionActive = false
   }
   return recognition
 }
@@ -145,7 +127,6 @@ function syncLocalCaptionRecognition() {
     captionsVisible
     && Boolean(room?.localParticipant.isMicrophoneEnabled)
   if (!shouldRun) {
-    clearTimeout(captionRestartTimer)
     if (captionRecognitionActive) captionRecognition?.stop()
     captionRecognitionActive = false
     captionRecognition = null
@@ -477,7 +458,6 @@ document.getElementById('chat-image').onchange = (event) => {
 
 document.getElementById('leave').onclick = async () => {
   captionsVisible = false
-  clearTimeout(captionRestartTimer)
   captionRecognition?.abort()
   await room?.disconnect()
   location.href = '/'
