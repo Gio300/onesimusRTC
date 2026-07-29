@@ -20,6 +20,7 @@ try {
 const moderatorToken = casterSession?.moderatorToken || ''
 sessionStorage.removeItem('onesimusHostCode')
 document.getElementById('roompill').textContent = roomName
+document.getElementById('room-summary').textContent = roomName
 
 const hands = new Map()
 const incomingMedia = new Map()
@@ -62,6 +63,266 @@ const modeBadge = document.getElementById('presentation-mode')
 const presenterHelp = document.getElementById('presenter-help')
 const captionOverlay = document.getElementById('caption-overlay')
 const weeklyStudyUrl = 'https://www.jw.org/en/library/jw-meeting-workbook/'
+
+function viewerUrl() {
+  const url = new URL('/participant.html', location.origin)
+  url.searchParams.set('room', roomName)
+  return url.toString()
+}
+
+function flashAction(button, message) {
+  if (!button) return
+  const label = button.querySelector('span:last-child') || button
+  const original = label.textContent
+  label.textContent = message
+  setTimeout(() => { label.textContent = original }, 1800)
+}
+
+async function copyViewerLink(button) {
+  await navigator.clipboard.writeText(viewerUrl())
+  flashAction(button, 'Copied')
+  setStatus('viewer link copied')
+}
+
+async function shareViewerInvitation(button) {
+  const shareData = {
+    title: `Join ${casterName || 'the host'} on OnesimosRTC`,
+    text: `Join room ${roomName} as a voice-only viewer.`,
+    url: viewerUrl(),
+  }
+
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData)
+      flashAction(button, 'Sent')
+      return
+    } catch (error) {
+      if (error?.name === 'AbortError') return
+    }
+  }
+
+  await copyViewerLink(button)
+}
+
+const cameraDock = document.getElementById('camera-dock')
+const bottomDock = document.querySelector('.bottom-dock')
+const sheetBackdrop = document.getElementById('sheet-backdrop')
+const sheets = [...document.querySelectorAll('.app-sheet')]
+const floatingWindows = [...document.querySelectorAll('.floating-window')]
+
+function syncCameraFloor() {
+  const floor = Math.ceil(cameraDock.getBoundingClientRect().bottom)
+  document.documentElement.style.setProperty('--camera-floor', `${floor}px`)
+  for (const panel of floatingWindows) {
+    if (!panel.hidden) placeFloatingWindow(panel, true)
+  }
+}
+
+function setActiveDock(id) {
+  for (const button of document.querySelectorAll('.dock-button')) {
+    button.classList.toggle('active', button.id === id)
+  }
+}
+
+function closeSheets() {
+  for (const sheet of sheets) {
+    sheet.hidden = true
+    sheet.classList.remove('open')
+  }
+  sheetBackdrop.hidden = true
+  document.body.classList.remove('sheet-open')
+  document.querySelectorAll('[aria-controls]').forEach((button) => {
+    if (button.getAttribute('aria-controls')?.endsWith('-sheet')) {
+      button.setAttribute('aria-expanded', 'false')
+    }
+  })
+}
+
+function openSheet(id) {
+  closeSheets()
+  const sheet = document.getElementById(id)
+  if (!sheet) return
+  sheet.hidden = false
+  sheetBackdrop.hidden = false
+  document.body.classList.add('sheet-open')
+  requestAnimationFrame(() => sheet.classList.add('open'))
+  const trigger = document.querySelector(`[aria-controls="${id}"]`)
+  trigger?.setAttribute('aria-expanded', 'true')
+  setActiveDock(
+    id === 'create-sheet'
+      ? 'dock-create'
+      : id === 'more-sheet'
+        ? 'dock-more'
+        : 'dock-create',
+  )
+}
+
+function panelBounds(panel) {
+  const floor = Math.ceil(cameraDock.getBoundingClientRect().bottom + 8)
+  const dockTop = Math.floor(bottomDock.getBoundingClientRect().top - 8)
+  const width = Math.min(400, window.innerWidth - 24)
+  const maxHeight = Math.max(150, dockTop - floor)
+  panel.style.width = `${width}px`
+  panel.style.maxHeight = `${maxHeight}px`
+  return { floor, dockTop, width, maxHeight }
+}
+
+function placeFloatingWindow(panel, restore = false) {
+  const bounds = panelBounds(panel)
+  const key = `onesimos-window:${panel.id}`
+  let saved = null
+  if (restore) {
+    try {
+      saved = JSON.parse(sessionStorage.getItem(key) || 'null')
+    } catch {
+      saved = null
+    }
+  }
+
+  const panelHeight = Math.min(panel.getBoundingClientRect().height, bounds.maxHeight)
+  const maxLeft = Math.max(8, window.innerWidth - bounds.width - 8)
+  const maxTop = Math.max(bounds.floor, bounds.dockTop - panelHeight)
+  const left = Math.min(Math.max(saved?.left ?? 12, 8), maxLeft)
+  const top = Math.min(Math.max(saved?.top ?? bounds.floor, bounds.floor), maxTop)
+
+  panel.style.left = `${left}px`
+  panel.style.top = `${top}px`
+  panel.style.right = 'auto'
+  panel.style.bottom = 'auto'
+}
+
+function toggleFloatingWindow(id) {
+  closeSheets()
+  const panel = document.getElementById(id)
+  if (!panel) return
+  panel.hidden = !panel.hidden
+  if (!panel.hidden) {
+    placeFloatingWindow(panel, true)
+  }
+  setActiveDock(
+    !panel.hidden
+      ? id === 'viewer-roster' ? 'dock-viewers' : 'dock-chat'
+      : 'dock-camera',
+  )
+}
+
+function makeDraggable(panel) {
+  const handle = panel.querySelector('[data-drag-handle]')
+  if (!handle) return
+  let drag = null
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('button, input, a')) return
+    event.preventDefault()
+    const rect = panel.getBoundingClientRect()
+    drag = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    }
+    handle.setPointerCapture(event.pointerId)
+    panel.classList.add('dragging')
+  })
+
+  handle.addEventListener('pointermove', (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return
+    const bounds = panelBounds(panel)
+    const rect = panel.getBoundingClientRect()
+    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8)
+    const maxTop = Math.max(bounds.floor, bounds.dockTop - rect.height)
+    const left = Math.min(Math.max(event.clientX - drag.offsetX, 8), maxLeft)
+    const top = Math.min(Math.max(event.clientY - drag.offsetY, bounds.floor), maxTop)
+    panel.style.left = `${left}px`
+    panel.style.top = `${top}px`
+  })
+
+  const finishDrag = (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return
+    const rect = panel.getBoundingClientRect()
+    sessionStorage.setItem(
+      `onesimos-window:${panel.id}`,
+      JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) }),
+    )
+    drag = null
+    panel.classList.remove('dragging')
+  }
+
+  handle.addEventListener('pointerup', finishDrag)
+  handle.addEventListener('pointercancel', finishDrag)
+}
+
+function initializeCasterShell() {
+  syncCameraFloor()
+  floatingWindows.forEach(makeDraggable)
+  window.addEventListener('resize', syncCameraFloor)
+  window.addEventListener('orientationchange', () => setTimeout(syncCameraFloor, 150))
+
+  sheetBackdrop.onclick = closeSheets
+  document.querySelectorAll('[data-close-sheet]').forEach((button) => {
+    button.onclick = closeSheets
+  })
+  document.querySelectorAll('[data-close-window]').forEach((button) => {
+    button.onclick = () => {
+      document.getElementById(button.dataset.closeWindow).hidden = true
+      setActiveDock('dock-camera')
+    }
+  })
+
+  document.getElementById('dock-camera').onclick = () => {
+    closeSheets()
+    floatingWindows.forEach((panel) => { panel.hidden = true })
+    setActiveDock('dock-camera')
+    if (mode !== 'camera') {
+      returnToCamera().catch((error) => setStatus(error.message))
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  document.getElementById('dock-viewers').onclick =
+    () => toggleFloatingWindow('viewer-roster')
+  document.getElementById('dock-chat').onclick =
+    () => toggleFloatingWindow('chat-window')
+  document.getElementById('dock-create').onclick =
+    () => openSheet('create-sheet')
+  document.getElementById('dock-more').onclick =
+    () => openSheet('more-sheet')
+  document.getElementById('summary-present').onclick =
+    () => openSheet('studio-sheet')
+  document.getElementById('open-studio-settings').onclick =
+    () => openSheet('studio-sheet')
+
+  document.getElementById('menu-open-studio').onclick =
+    () => openSheet('studio-sheet')
+  document.getElementById('menu-add-media').onclick = () => {
+    openSheet('studio-sheet')
+    document.getElementById('media-files').click()
+  }
+  document.getElementById('menu-open-study').onclick = () => {
+    closeSheets()
+    window.open(weeklyStudyUrl, '_blank', 'noopener,noreferrer')
+  }
+  document.getElementById('menu-add-link').onclick = () => {
+    openSheet('studio-sheet')
+    const form = document.getElementById('link-form')
+    form.hidden = false
+    setTimeout(() => document.getElementById('study-link').focus(), 50)
+  }
+  document.getElementById('menu-share-room').onclick =
+    (event) => shareViewerInvitation(event.currentTarget)
+      .catch((error) => setStatus(error.message))
+  document.getElementById('menu-copy-link').onclick =
+    (event) => copyViewerLink(event.currentTarget)
+      .catch((error) => setStatus(error.message))
+
+  document.getElementById('quick-flip').onclick =
+    () => switchCamera().catch((error) => setStatus(error.message))
+  document.getElementById('quick-share').onclick =
+    (event) => shareViewerInvitation(event.currentTarget)
+      .catch((error) => setStatus(error.message))
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeSheets()
+  })
+}
 
 function pruneDetachedAudio() {
   for (const element of document.querySelectorAll('#audio-sink audio')) {
@@ -323,6 +584,7 @@ function updateControlState() {
     presentationLayout !== 'pip'
   document.getElementById('clear-queue').hidden = !hasItems
   document.getElementById('queue-count').textContent = String(queue.length)
+  document.getElementById('summary-queue-count').textContent = String(queue.length)
   modeBadge.textContent = mode === 'camera'
     ? 'Camera live'
     : mode === 'screen'
@@ -1002,6 +1264,10 @@ async function switchCamera() {
     cameraFacingMode === 'environment'
       ? 'Rear camera active - tap for front'
       : 'Front camera active - tap for rear'
+  document.getElementById('quick-flip').title =
+    cameraFacingMode === 'environment'
+      ? 'Switch to front camera'
+      : 'Switch to rear camera'
 }
 
 async function shareScreen() {
@@ -1049,6 +1315,7 @@ function renderRoster() {
   const list = document.getElementById('people')
   const people = [...room.remoteParticipants.values()]
   document.getElementById('count').textContent = String(people.length)
+  document.getElementById('summary-count').textContent = String(people.length)
   list.innerHTML = ''
 
   for (const participant of people) {
@@ -1247,12 +1514,7 @@ document.getElementById('audio').onclick = async () => {
 }
 
 document.getElementById('share').onclick = async () => {
-  const url = new URL('/participant.html', location.origin)
-  url.searchParams.set('room', roomName)
-  const button = document.getElementById('share')
-  await navigator.clipboard.writeText(url.toString())
-  button.textContent = 'Viewer link copied'
-  setTimeout(() => { button.textContent = 'Copy viewer link' }, 1800)
+  await shareViewerInvitation(document.getElementById('share'))
 }
 
 document.getElementById('leave').onclick = async () => {
@@ -1377,10 +1639,10 @@ document.getElementById('captions').onclick = () => {
 }
 
 document.getElementById('review-hands').onclick = () => {
-  document.getElementById('viewer-roster').scrollIntoView({
-    behavior: 'smooth',
-    block: 'center',
-  })
+  const roster = document.getElementById('viewer-roster')
+  roster.hidden = false
+  placeFloatingWindow(roster, true)
+  setActiveDock('dock-viewers')
 }
 
 document.getElementById('chat-form').onsubmit = async (event) => {
@@ -1403,6 +1665,8 @@ document.getElementById('screen-share').onclick = () => {
 document.getElementById('clear-queue').onclick = () => {
   clearQueue().catch((error) => setStatus(error.message))
 }
+
+initializeCasterShell()
 
 start().catch((error) => {
   console.error(error)

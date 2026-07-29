@@ -4,112 +4,272 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OnesimosRTC &mdash; Caster</title>
-  <link rel="stylesheet" href="/styles.css?v=20260729-1" />
+  <link rel="stylesheet" href="/styles.css?v=20260729-2" />
   <script src="/vendor/livekit-client.umd.min.js"></script>
 </head>
-<body>
-  <div class="stage">
-    <div class="videowrap">
-      <video id="local" autoplay muted playsinline></video>
-      <div class="overlay">
-        <span class="pill" id="roompill">room</span>
-        <span class="pill" id="status">connecting&hellip;</span>
+<body class="caster-page">
+  <div class="stage caster-stage">
+    <header class="app-topbar">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">O</span>
+        <span>
+          <strong>OnesimosRTC</strong>
+          <small>Host studio</small>
+        </span>
       </div>
-      <div class="caption-overlay" id="caption-overlay" hidden></div>
+      <span class="top-status"><span aria-hidden="true"></span> Live room</span>
+    </header>
+
+    <div class="camera-dock" id="camera-dock">
+      <div class="videowrap">
+        <video id="local" autoplay muted playsinline></video>
+        <div class="overlay">
+          <span class="pill" id="roompill">room</span>
+          <span class="pill" id="status">connecting&hellip;</span>
+        </div>
+        <div class="camera-quick-actions" aria-label="Camera controls">
+          <button id="quick-flip" class="camera-action" type="button" aria-label="Flip camera">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 7h-5V2M4 17h5v5M5.2 9A7.5 7.5 0 0 1 18 5.5L20 7M4 17l2 1.5A7.5 7.5 0 0 0 18.8 15" />
+            </svg>
+            <span>Flip</span>
+          </button>
+          <button id="quick-share" class="camera-action" type="button" aria-label="Share viewer invitation">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4" />
+            </svg>
+            <span>Invite</span>
+          </button>
+        </div>
+        <div class="caption-overlay" id="caption-overlay" hidden></div>
+      </div>
+
+      <section class="notice hand-notice" id="hand-notice" hidden aria-live="assertive">
+        <div>
+          <strong id="hand-notice-title">A viewer raised a hand</strong>
+          <small>Review the request and allow their microphone.</small>
+        </div>
+        <button id="review-hands" class="primary" type="button">Review</button>
+      </section>
     </div>
 
-    <section class="notice hand-notice" id="hand-notice" hidden aria-live="assertive">
-      <div>
-        <strong id="hand-notice-title">A viewer raised a hand</strong>
-        <small>Open the viewer list to allow their microphone.</small>
-      </div>
-      <button id="review-hands" class="primary" type="button">Review</button>
+    <main class="caster-home" aria-label="Live room summary">
+      <section class="session-summary">
+        <div>
+          <span>Room</span>
+          <strong id="room-summary">main</strong>
+        </div>
+        <div>
+          <span>Viewers</span>
+          <strong id="summary-count">0</strong>
+        </div>
+        <div>
+          <span>Queued</span>
+          <strong id="summary-queue-count">0</strong>
+        </div>
+        <button id="summary-present" class="primary compact-command" type="button">Present</button>
+      </section>
+    </main>
+
+    <section class="roster floating-window" id="viewer-roster" hidden aria-labelledby="viewer-window-title">
+      <header class="window-bar" data-drag-handle>
+        <div>
+          <strong id="viewer-window-title">Viewers</strong>
+          <small><span id="count">0</span> connected</small>
+        </div>
+        <button class="window-close" type="button" data-close-window="viewer-roster"
+          aria-label="Close viewers">&times;</button>
+      </header>
+      <ul id="people"></ul>
     </section>
 
-    <section class="presenter" aria-labelledby="presenter-title">
-      <div class="presenter-heading">
+    <section class="room-chat floating-window" id="chat-window" hidden
+      aria-labelledby="room-chat-title">
+      <header class="window-bar room-chat-heading" data-drag-handle>
         <div>
-          <p class="eyebrow">Host controls</p>
-          <h2 id="presenter-title">Study presentation</h2>
+          <strong id="room-chat-title">Room chat</strong>
+          <small>Requests and shared pictures</small>
         </div>
-        <span class="mode-badge" id="presentation-mode">Camera live</span>
+        <button class="window-close" type="button" data-close-window="chat-window"
+          aria-label="Close chat">&times;</button>
+      </header>
+      <div id="chat-log" class="chat-log" aria-live="polite">
+        <p class="chat-empty">No room messages yet.</p>
       </div>
-
-      <div class="presenter-actions">
-        <button id="weekly-study" class="action-tile" type="button">
-          <span class="action-icon" aria-hidden="true">&#128214;</span>
-          <span><strong>This week's study</strong><small>Open the official workbook</small></span>
-        </button>
-        <label class="action-tile" for="media-files">
-          <span class="action-icon" aria-hidden="true">&#128444;</span>
-          <span><strong>Add pictures or video</strong><small>Choose files from this phone</small></span>
-        </label>
-        <input id="media-files" type="file" accept="image/*,video/*" multiple hidden />
-        <button id="show-link-form" class="action-tile" type="button">
-          <span class="action-icon" aria-hidden="true">&#128279;</span>
-          <span><strong>Add JW link</strong><small>Queue an official shared link</small></span>
-        </button>
-        <button id="screen-share" class="action-tile" type="button">
-          <span class="action-icon" aria-hidden="true">&#9635;</span>
-          <span><strong>Share screen</strong><small>Present JW Library or a browser tab</small></span>
-        </button>
-        <button id="paste-image" class="action-tile" type="button">
-          <span class="action-icon" aria-hidden="true">&#128203;</span>
-          <span><strong>Paste a picture</strong><small>Use an image copied on this phone</small></span>
-        </button>
-        <button id="switch-camera" class="action-tile" type="button">
-          <span class="action-icon" aria-hidden="true">&#8635;</span>
-          <span><strong>Flip camera</strong><small>Switch between front and rear cameras</small></span>
-        </button>
-      </div>
-
-      <form id="link-form" class="link-form" hidden>
-        <label for="study-link">Official JW.org link</label>
-        <div>
-          <input id="study-link" type="url" inputmode="url"
-            placeholder="https://www.jw.org/..." autocomplete="off" />
-          <button class="primary" type="submit">Add</button>
-        </div>
-        <p id="link-error" class="join-error" role="alert"></p>
+      <form id="chat-form" class="chat-compose">
+        <input id="chat-message" type="text" maxlength="500"
+          placeholder="Message the room" autocomplete="off" />
+        <button class="primary" type="submit">Send</button>
       </form>
+    </section>
 
-      <div class="switcher-settings">
-        <label>
-          <span>On-screen layout</span>
-          <select id="presentation-layout">
-            <option value="pip">Material + speaker window</option>
-            <option value="speaker-left">Speaker left, material right</option>
-            <option value="speaker-right">Material left, speaker right</option>
-            <option value="material-only">Material only</option>
-          </select>
-        </label>
-        <label>
-          <span>Speaker window</span>
-          <select id="speaker-position">
-            <option value="bottom-right">Bottom right</option>
-            <option value="bottom-left">Bottom left</option>
-            <option value="top-right">Top right</option>
-            <option value="top-left">Top left</option>
-          </select>
-        </label>
+    <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+
+    <section class="app-sheet create-sheet" id="create-sheet" hidden
+      role="dialog" aria-modal="true" aria-labelledby="create-sheet-title">
+      <header class="sheet-header">
+        <div>
+          <span class="sheet-grabber" aria-hidden="true"></span>
+          <h2 id="create-sheet-title">Add to the meeting</h2>
+        </div>
+        <button class="sheet-close" type="button" data-close-sheet aria-label="Close menu">&times;</button>
+      </header>
+      <div class="sheet-actions">
+        <button id="menu-add-media" class="sheet-action" type="button">
+          <span class="sheet-action-icon" aria-hidden="true">&#9635;</span>
+          <span><strong>Pictures or video</strong><small>Choose media from this phone</small></span>
+          <span aria-hidden="true">&rsaquo;</span>
+        </button>
+        <button id="menu-open-study" class="sheet-action" type="button">
+          <span class="sheet-action-icon" aria-hidden="true">&#128214;</span>
+          <span><strong>This week's study</strong><small>Open the official workbook</small></span>
+          <span aria-hidden="true">&rsaquo;</span>
+        </button>
+        <button id="menu-add-link" class="sheet-action" type="button">
+          <span class="sheet-action-icon" aria-hidden="true">&#128279;</span>
+          <span><strong>Add an official JW link</strong><small>Queue material for the room</small></span>
+          <span aria-hidden="true">&rsaquo;</span>
+        </button>
+        <button id="menu-open-studio" class="sheet-action" type="button">
+          <span class="sheet-action-icon" aria-hidden="true">&#9655;</span>
+          <span><strong>Presentation studio</strong><small>Queue, arrange, and present items</small></span>
+          <span aria-hidden="true">&rsaquo;</span>
+        </button>
+        <button id="menu-share-room" class="sheet-action" type="button">
+          <span class="sheet-action-icon" aria-hidden="true">&#8599;</span>
+          <span><strong>Invite viewers</strong><small>Send the room link through your phone</small></span>
+          <span aria-hidden="true">&rsaquo;</span>
+        </button>
+        <button id="menu-copy-link" class="sheet-action" type="button">
+          <span class="sheet-action-icon" aria-hidden="true">&#128203;</span>
+          <span><strong>Copy viewer link</strong><small>Keep it ready to paste anywhere</small></span>
+          <span aria-hidden="true">&rsaquo;</span>
+        </button>
       </div>
+    </section>
 
-      <div class="queue-heading">
-        <h3>Presentation queue <span id="queue-count">0</span></h3>
-        <button id="clear-queue" class="text-button" type="button" hidden>Clear</button>
-      </div>
-      <ol id="presentation-queue" class="presentation-queue">
-        <li class="queue-empty">Add this week's pictures or videos, then tap Present.</li>
-      </ol>
+    <section class="app-sheet studio-sheet" id="studio-sheet" hidden
+      role="dialog" aria-modal="true" aria-labelledby="studio-sheet-title">
+      <header class="sheet-header">
+        <div>
+          <span class="sheet-grabber" aria-hidden="true"></span>
+          <h2 id="studio-sheet-title">Presentation studio</h2>
+        </div>
+        <button class="sheet-close" type="button" data-close-sheet aria-label="Close studio">&times;</button>
+      </header>
 
-      <div class="presentation-controls">
-        <button id="previous-slide" class="ghost icon-command" type="button"
-          aria-label="Previous item" title="Previous item" disabled>&larr;</button>
-        <button id="present-slide" class="primary" type="button" disabled>Present</button>
-        <button id="next-slide" class="ghost icon-command" type="button"
-          aria-label="Next item" title="Next item" disabled>&rarr;</button>
-        <button id="return-camera" class="ghost" type="button" disabled>Camera</button>
-        <button id="speaker-pip" class="ghost" type="button" disabled>Hide speaker</button>
+      <section class="presenter" aria-labelledby="presenter-title">
+        <div class="presenter-heading">
+          <div>
+            <p class="eyebrow">Now sharing</p>
+            <h3 id="presenter-title">Study presentation</h3>
+          </div>
+          <span class="mode-badge" id="presentation-mode">Camera live</span>
+        </div>
+
+        <div class="presenter-actions">
+          <button id="weekly-study" class="action-tile" type="button">
+            <span class="action-icon" aria-hidden="true">&#128214;</span>
+            <span><strong>This week's study</strong><small>Open the official workbook</small></span>
+          </button>
+          <label class="action-tile" for="media-files">
+            <span class="action-icon" aria-hidden="true">&#9635;</span>
+            <span><strong>Add pictures or video</strong><small>Choose files from this phone</small></span>
+          </label>
+          <input id="media-files" type="file" accept="image/*,video/*" multiple hidden />
+          <button id="show-link-form" class="action-tile" type="button">
+            <span class="action-icon" aria-hidden="true">&#128279;</span>
+            <span><strong>Add JW link</strong><small>Queue an official shared link</small></span>
+          </button>
+          <button id="screen-share" class="action-tile" type="button">
+            <span class="action-icon" aria-hidden="true">&#8689;</span>
+            <span><strong>Share screen</strong><small>Present JW Library or a browser tab</small></span>
+          </button>
+          <button id="paste-image" class="action-tile" type="button">
+            <span class="action-icon" aria-hidden="true">&#128203;</span>
+            <span><strong>Paste a picture</strong><small>Use an image copied on this phone</small></span>
+          </button>
+          <button id="switch-camera" class="action-tile" type="button">
+            <span class="action-icon" aria-hidden="true">&#8635;</span>
+            <span><strong>Flip camera</strong><small>Switch between front and rear cameras</small></span>
+          </button>
+        </div>
+
+        <form id="link-form" class="link-form" hidden>
+          <label for="study-link">Official JW.org link</label>
+          <div>
+            <input id="study-link" type="url" inputmode="url"
+              placeholder="https://www.jw.org/..." autocomplete="off" />
+            <button class="primary" type="submit">Add</button>
+          </div>
+          <p id="link-error" class="join-error" role="alert"></p>
+        </form>
+
+        <div class="switcher-settings">
+          <label>
+            <span>On-screen layout</span>
+            <select id="presentation-layout">
+              <option value="pip">Material + speaker window</option>
+              <option value="speaker-left">Speaker left, material right</option>
+              <option value="speaker-right">Material left, speaker right</option>
+              <option value="material-only">Material only</option>
+            </select>
+          </label>
+          <label>
+            <span>Speaker window</span>
+            <select id="speaker-position">
+              <option value="bottom-right">Bottom right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="top-right">Top right</option>
+              <option value="top-left">Top left</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="queue-heading">
+          <h3>Presentation queue <span id="queue-count">0</span></h3>
+          <button id="clear-queue" class="text-button" type="button" hidden>Clear</button>
+        </div>
+        <ol id="presentation-queue" class="presentation-queue">
+          <li class="queue-empty">Add this week's pictures or videos, then tap Present.</li>
+        </ol>
+
+        <div class="presentation-controls">
+          <button id="previous-slide" class="ghost icon-command" type="button"
+            aria-label="Previous item" title="Previous item" disabled>&larr;</button>
+          <button id="present-slide" class="primary" type="button" disabled>Present</button>
+          <button id="next-slide" class="ghost icon-command" type="button"
+            aria-label="Next item" title="Next item" disabled>&rarr;</button>
+          <button id="return-camera" class="ghost" type="button" disabled>Camera</button>
+          <button id="speaker-pip" class="ghost" type="button" disabled>Hide speaker</button>
+        </div>
+
+        <p class="presenter-help" id="presenter-help">
+          Camera is live. Your presentation queue is ready.
+        </p>
+      </section>
+    </section>
+
+    <section class="app-sheet more-sheet" id="more-sheet" hidden
+      role="dialog" aria-modal="true" aria-labelledby="more-sheet-title">
+      <header class="sheet-header">
+        <div>
+          <span class="sheet-grabber" aria-hidden="true"></span>
+          <h2 id="more-sheet-title">More controls</h2>
+        </div>
+        <button class="sheet-close" type="button" data-close-sheet aria-label="Close controls">&times;</button>
+      </header>
+
+      <div class="controls control-grid">
+        <button id="mic" class="ghost">Mute mic</button>
+        <button id="cam" class="ghost">Stop video</button>
+        <button id="audio" class="primary" hidden>Enable sound</button>
+        <button id="share" class="ghost">Share invitation</button>
+        <button id="open-studio-settings" class="ghost" type="button">Presentation</button>
+        <button id="leave" class="danger-command">Leave room</button>
       </div>
 
       <div class="automation-controls">
@@ -119,45 +279,43 @@
           <span>Show queued media when a speaker asks for it</span>
         </label>
         <p id="caption-help" class="presenter-help">
-          Captions also power commands such as “show the map,” “next picture,”
-          and “back to camera.”
+          Captions also listen for presentation requests from the speaker.
         </p>
       </div>
-      <p class="presenter-help" id="presenter-help">
-        Viewers receive one low-bandwidth feed. Pictures, video, and the speaker
-        are combined before they leave this phone.
-      </p>
     </section>
 
-    <div class="roster" id="viewer-roster">
-      <h3>Viewers &mdash; <span id="count">0</span></h3>
-      <ul id="people"></ul>
-    </div>
-
-    <section class="room-chat" aria-labelledby="room-chat-title">
-      <div class="room-chat-heading">
-        <div>
-          <p class="eyebrow">Room messages</p>
-          <h3 id="room-chat-title">Requests and shared pictures</h3>
-        </div>
-      </div>
-      <div id="chat-log" class="chat-log" aria-live="polite">
-        <p class="chat-empty">Viewer requests and approved photo shares appear here.</p>
-      </div>
-      <form id="chat-form" class="chat-compose">
-        <input id="chat-message" type="text" maxlength="500"
-          placeholder="Message everyone in the room" autocomplete="off" />
-        <button class="primary" type="submit">Send</button>
-      </form>
-    </section>
-
-    <div class="controls">
-      <button id="mic" class="ghost">Mute mic</button>
-      <button id="cam" class="ghost">Stop video</button>
-      <button id="audio" class="primary" hidden>Enable sound</button>
-      <button id="share" class="ghost">Copy viewer link</button>
-      <button id="leave" class="ghost">Leave</button>
-    </div>
+    <nav class="bottom-dock" aria-label="Host controls">
+      <button id="dock-camera" class="dock-button active" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="2" y="6" width="14" height="12" rx="2" />
+          <path d="m16 10 5-3v10l-5-3" />
+        </svg>
+        <span>Camera</span>
+      </button>
+      <button id="dock-viewers" class="dock-button" type="button" aria-controls="viewer-roster">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="9" cy="7" r="4" />
+          <path d="M2 21v-2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v2M16 3.5a4 4 0 0 1 0 7M18 14a5 5 0 0 1 4 5v2" />
+        </svg>
+        <span>Viewers</span>
+      </button>
+      <button id="dock-create" class="dock-button dock-plus" type="button"
+        aria-controls="create-sheet" aria-label="Open primary menu">
+        <span aria-hidden="true">+</span>
+      </button>
+      <button id="dock-chat" class="dock-button" type="button" aria-controls="chat-window">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+        </svg>
+        <span>Chat</span>
+      </button>
+      <button id="dock-more" class="dock-button" type="button" aria-controls="more-sheet">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+        <span>More</span>
+      </button>
+    </nav>
   </div>
 
   <div id="audio-sink" hidden></div>
@@ -168,6 +326,6 @@
     <canvas id="presentation-canvas" width="960" height="540"></canvas>
   </div>
 
-  <script type="module" src="/caster.js?v=20260729-1"></script>
+  <script type="module" src="/caster.js?v=20260729-2"></script>
 </body>
 </html>
