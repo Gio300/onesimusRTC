@@ -52,6 +52,13 @@ const modeBadge = document.getElementById('presentation-mode')
 const presenterHelp = document.getElementById('presenter-help')
 const weeklyStudyUrl = 'https://www.jw.org/en/library/jw-meeting-workbook/'
 
+function pruneDetachedAudio() {
+  for (const element of document.querySelectorAll('#audio-sink audio')) {
+    const tracks = element.srcObject?.getTracks?.() || []
+    if (!tracks.some((track) => track.readyState === 'live')) element.remove()
+  }
+}
+
 function activeItem() {
   return queue[activeIndex] || null
 }
@@ -665,6 +672,10 @@ async function start() {
     })
     .on(L.RoomEvent.TrackUnsubscribed, (track) => {
       for (const element of track.detach()) element.remove()
+      setTimeout(pruneDetachedAudio, 0)
+    })
+    .on(L.RoomEvent.TrackUnpublished, () => {
+      setTimeout(pruneDetachedAudio, 100)
     })
     .on(L.RoomEvent.DataReceived, (payload, participant) => {
       const message = decode(payload)

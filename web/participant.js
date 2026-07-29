@@ -16,6 +16,13 @@ let room
 let handUp = false
 let hasVideo = false
 
+function pruneDetachedAudio() {
+  for (const element of document.querySelectorAll('#audio-sink audio')) {
+    const tracks = element.srcObject?.getTracks?.() || []
+    if (!tracks.some((track) => track.readyState === 'live')) element.remove()
+  }
+}
+
 function syncVideoStatus() {
   setStatus(hasVideo ? 'live' : 'connected - waiting for caster video')
 }
@@ -67,10 +74,14 @@ async function start() {
     })
     .on(L.RoomEvent.TrackUnsubscribed, (track) => {
       for (const element of track.detach()) element.remove()
+      setTimeout(pruneDetachedAudio, 0)
       if (track.kind === 'video') {
         hasVideo = false
         syncVideoStatus()
       }
+    })
+    .on(L.RoomEvent.TrackUnpublished, () => {
+      setTimeout(pruneDetachedAudio, 100)
     })
     .on(L.RoomEvent.DataReceived, (payload) => {
       const message = decode(payload)
@@ -82,6 +93,7 @@ async function start() {
       label.textContent = presenting
         ? String(message.title || 'Study material').slice(0, 80)
         : ''
+      if (!presenting) setTimeout(pruneDetachedAudio, 250)
     })
     .on(L.RoomEvent.ParticipantPermissionsChanged, (_previous, participant) => {
       if (participant === room.localParticipant) syncSpeakPermission()
